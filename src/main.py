@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import sys
 from apify import Actor
 from scrapy.crawler import CrawlerRunner
 from scrapy.utils.project import get_project_settings
@@ -19,6 +20,15 @@ def main():
 
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     log = logging.getLogger(__name__)
+
+    print(f"BOOT: src.main from={__file__}", flush=True)
+    print(f"BOOT: SCRAPY_SETTINGS_MODULE={os.environ.get('SCRAPY_SETTINGS_MODULE')}", flush=True)
+    print("BOOT: sys.path[0:5]=" + repr(sys.path[0:5]), flush=True)
+    try:
+        import sven_scraping_projects as ssp  
+        print(f"BOOT: sven_scraping_projects from={ssp.__file__}", flush=True)
+    except Exception as e:
+        print(f"BOOT: could not import sven_scraping_projects: {e!r}", flush=True)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
