@@ -19,6 +19,9 @@ def main():
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     log = logging.getLogger(__name__)
 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     async def init_and_get_input():
         await Actor.init()
         return await Actor.get_input() or {}
@@ -26,7 +29,7 @@ def main():
     input_data = {}
     actor_initialized = False
     try:
-        input_data = asyncio.run(init_and_get_input())
+        input_data = loop.run_until_complete(init_and_get_input())
         actor_initialized = True
     except Exception as e:
         log.exception("Apify Actor.init() / Actor.get_input() failed; falling back to env. Error: %s", e)
@@ -61,9 +64,14 @@ def main():
         log.info('Spider %s completed successfully', spider_name)
     try:
         if actor_initialized:
-            asyncio.run(Actor.exit())
+            loop.run_until_complete(Actor.exit())
     except Exception as e:
         log.warning('Could not shut down Apify Actor cleanly: %s', e)
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

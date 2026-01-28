@@ -14,6 +14,16 @@ NEWSPIDER_MODULE = "sven_scraping_projects.spiders"
 
 ADDONS = {}
 
+# Scrapy 2.14+ defaults to the asyncio-based reactor. This project also uses
+# `asyncio.run()` to integrate the Apify SDK (Actor.init/get_input/exit).
+# Mixing the asyncio reactor with repeated asyncio event loop creation can
+# stall the crawl on some runtimes. Force the classic reactor for stability.
+TWISTED_REACTOR = "twisted.internet.selectreactor.SelectReactor"
+
+# Emit progress logs frequently so Apify runs don't look "stuck" during long downloads.
+LOGSTATS_INTERVAL = 10
+TELNETCONSOLE_ENABLED = False
+
 # Crawl responsibly by identifying yourself (and your website) on the user-agent
 # USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36'
 
