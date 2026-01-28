@@ -68,6 +68,42 @@ def main():
     else:
         log.info('Loading Scrapy project settings...')
     settings = get_project_settings()
+
+    try:
+        max_items = input_data.get("max_items")
+        if isinstance(max_items, int) and max_items > 0:
+            settings.set("CLOSESPIDER_ITEMCOUNT", max_items, priority="cmdline")
+            if actor_initialized:
+                Actor.log.info(f"Configured CLOSESPIDER_ITEMCOUNT={max_items}")
+            else:
+                log.info("Configured CLOSESPIDER_ITEMCOUNT=%s", max_items)
+
+        max_pages = input_data.get("max_pages")
+        if isinstance(max_pages, int) and max_pages > 0:
+            settings.set("CLOSESPIDER_PAGECOUNT", max_pages, priority="cmdline")
+            if actor_initialized:
+                Actor.log.info(f"Configured CLOSESPIDER_PAGECOUNT={max_pages}")
+            else:
+                log.info("Configured CLOSESPIDER_PAGECOUNT=%s", max_pages)
+
+        close_spider_timeout_secs = input_data.get("close_spider_timeout_secs")
+        if isinstance(close_spider_timeout_secs, (int, float)) and close_spider_timeout_secs > 0:
+            settings.set("CLOSESPIDER_TIMEOUT", close_spider_timeout_secs, priority="cmdline")
+            if actor_initialized:
+                Actor.log.info(f"Configured CLOSESPIDER_TIMEOUT={close_spider_timeout_secs}s")
+            else:
+                log.info("Configured CLOSESPIDER_TIMEOUT=%ss", close_spider_timeout_secs)
+        elif actor_initialized:
+            Actor.log.info(
+                "No close_spider_timeout_secs set - spider will run until completion. "
+                "To scrape all results, increase the timeout in Apify Run options "
+                "(default is 300s; increase to 600s+ for large datasets)."
+            )
+    except Exception as e:
+        if actor_initialized:
+            Actor.log.warning(f"Failed applying CLOSESPIDER_* settings from input: {e}")
+        else:
+            log.warning("Failed applying CLOSESPIDER_* settings from input: %s", e)
     
 
     if actor_initialized:
