@@ -13,24 +13,23 @@ def run_spider(spider_name, settings):
     yield runner.crawl(spider_name)
     reactor.stop()
 
-
-async def get_actor_input():
-    try:
-        input_data = await Actor.get_input() or {}
-        return input_data
-    except Exception as e:
-        Actor.log.warning(f'Could not get Actor input: {e}')
-        return {}
-
-
 def main():
+
+    try:
+        asyncio.run(Actor.init())
+    except Exception as e:
+
+        try:
+            Actor.log.warning(f'Could not initialize Apify Actor: {e}')
+        except Exception:
+            pass
 
     Actor.log.info('Starting Scrapy spider on Apify...')
 
     spider_name = 'uke' 
     
     try:
-        input_data = asyncio.run(get_actor_input())
+        input_data = asyncio.run(Actor.get_input()) or {}
         spider_name = input_data.get('spider_name', spider_name)
     except Exception as e:
         Actor.log.warning(f'Could not get input from Actor: {e}')
@@ -45,6 +44,13 @@ def main():
     reactor.run()
     
     Actor.log.info(f'Spider {spider_name} completed successfully')
+    try:
+        asyncio.run(Actor.exit())
+    except Exception as e:
+        try:
+            Actor.log.warning(f'Could not shut down Apify Actor cleanly: {e}')
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':
