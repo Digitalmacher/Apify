@@ -6,6 +6,7 @@ from scrapy.crawler import CrawlerRunner
 from scrapy.utils.project import get_project_settings
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
+from twisted.python.failure import Failure
 
 
 @inlineCallbacks
@@ -52,10 +53,39 @@ def main():
     else:
         log.info('Running spider: %s', spider_name)
     
+    if actor_initialized:
+        Actor.log.info('Loading Scrapy project settings...')
+    else:
+        log.info('Loading Scrapy project settings...')
     settings = get_project_settings()
     
 
-    run_spider(spider_name, settings)
+    if actor_initialized:
+        Actor.log.info('Starting spider (scheduling crawl)...')
+    else:
+        log.info('Starting spider (scheduling crawl)...')
+
+    d = run_spider(spider_name, settings)
+
+    def _on_error(f: Failure):
+        tb = f.getTraceback()
+        if actor_initialized:
+            Actor.log.error(f"Spider crashed:\n{tb}")
+        else:
+            log.error("Spider crashed:\n%s", tb)
+        try:
+            if reactor.running:
+                reactor.stop()
+        except Exception:
+            pass
+        return f
+
+    d.addErrback(_on_error)
+
+    if actor_initialized:
+        Actor.log.info('Running Twisted reactor...')
+    else:
+        log.info('Running Twisted reactor...')
     reactor.run()
     
     if actor_initialized:
