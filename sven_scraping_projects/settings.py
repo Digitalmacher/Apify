@@ -14,11 +14,18 @@ NEWSPIDER_MODULE = "sven_scraping_projects.spiders"
 
 ADDONS = {}
 
-# Scrapy 2.14+ defaults to the asyncio-based reactor. This project also uses
-# `asyncio.run()` to integrate the Apify SDK (Actor.init/get_input/exit).
-# Mixing the asyncio reactor with repeated asyncio event loop creation can
-# stall the crawl on some runtimes. Force the classic reactor for stability.
-TWISTED_REACTOR = "twisted.internet.selectreactor.SelectReactor"
+# Scrapy 2.14+ defaults to the asyncio-based reactor. This project integrates the
+# Apify SDK and runs Scrapy via Twisted, so we force a "classic" Twisted reactor.
+#
+# IMPORTANT: The reactor must match what Twisted installs on the platform.
+# - Linux typically uses EPollReactor
+# - macOS/Windows typically use SelectReactor
+import sys
+
+if sys.platform.startswith("linux"):
+    TWISTED_REACTOR = "twisted.internet.epollreactor.EPollReactor"
+else:
+    TWISTED_REACTOR = "twisted.internet.selectreactor.SelectReactor"
 
 # Emit progress logs frequently so Apify runs don't look "stuck" during long downloads.
 LOGSTATS_INTERVAL = 10
