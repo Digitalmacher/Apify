@@ -108,13 +108,7 @@ class UkeSpider(Spider):
         jsonresponse = json.loads(response.text)
 
         # Extract list of profile result objects
-        response_data = jsonresponse.get('response', {})
-        profiles = response_data.get('hits', [])
-
-        # Log pagination progress
-        current_page = self._extract_page_number(response.url)
-        num_profiles = len(profiles)
-        self.logger.info(f'Processing page {current_page}: found {num_profiles} profiles')
+        profiles = jsonresponse.get('response').get('hits')
 
         for profile in profiles:
             # Each hit contains a direct URL to the profile page
@@ -126,95 +120,6 @@ class UkeSpider(Spider):
                 headers=self.profile_headers,
                 callback=self.parse_profile
             )
-
-        # Check for pagination and follow next page if available
-        next_page_url = self._get_next_page_url(response.url, jsonresponse, num_profiles)
-        if next_page_url:
-            self.logger.info(f'Following pagination to next page: {next_page_url}')
-            yield Request(
-                next_page_url,
-                method='GET',
-                dont_filter=True,
-                headers=self.headers,
-                callback=self.parse
-            )
-
-    def _extract_page_number(self, url):
-        """Extract current page number from URL."""
-        try:
-            from urllib.parse import urlparse, parse_qs
-            parsed = urlparse(url)
-            params = parse_qs(parsed.query)
-            page = params.get('p', ['1'])[0]
-            return int(page)
-        except (ValueError, KeyError, IndexError):
-            return 1
-
-    def _get_next_page_url(self, current_url, jsonresponse, num_profiles):
-        """
-        Determine if there's a next page and return its URL.
-        Checks multiple pagination patterns:
-        1. Explicit pagination metadata in JSON response
-        2. If we got exactly 10000 results, there might be more pages
-        3. Total count vs current results
-        """
-        try:
-            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-
-            # Extract current page number
-            current_page = self._extract_page_number(current_url)
-
-            # Check for explicit pagination metadata
-            response_data = jsonresponse.get('response', {})
-            
-            # Pattern 1: Check for pagination object
-            pagination = response_data.get('pagination', {})
-            total_pages = pagination.get('totalPages')
-            if total_pages and current_page < total_pages:
-                return self._build_next_page_url(current_url, current_page + 1)
-
-            # Pattern 2: Check for total results vs current page results
-            num_found = response_data.get('numFound')
-            if num_found:
-                # Calculate expected total pages (assuming n=10000 per page)
-                expected_total_pages = (num_found + 9999) // 10000  # Ceiling division
-                if current_page < expected_total_pages:
-                    return self._build_next_page_url(current_url, current_page + 1)
-
-            # Pattern 3: If we got exactly 10000 results, assume there might be more
-            # (This is a heuristic - the API might return exactly 10000 even if it's the last page)
-            if num_profiles == 10000:
-                # Try next page - if it returns 0 results, Scrapy will naturally stop
-                return self._build_next_page_url(current_url, current_page + 1)
-
-            return None
-
-        except Exception as e:
-            self.logger.warning(f'Error determining next page URL: {e}')
-            return None
-
-    def _build_next_page_url(self, current_url, next_page):
-        """Build URL for next page by updating the 'p' parameter."""
-        try:
-            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-
-            parsed = urlparse(current_url)
-            params = parse_qs(parsed.query)
-            params['p'] = [str(next_page)]
-            
-            new_query = urlencode(params, doseq=True)
-            new_url = urlunparse((
-                parsed.scheme,
-                parsed.netloc,
-                parsed.path,
-                parsed.params,
-                new_query,
-                parsed.fragment
-            ))
-            return new_url
-        except Exception as e:
-            self.logger.warning(f'Error building next page URL: {e}')
-            return None
 
     def parse_profile(self, response):
         # Debug helpers for individual profile pages
