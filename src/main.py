@@ -13,8 +13,9 @@ from twisted.python.failure import Failure
 @inlineCallbacks
 def run_spider(spider_name, settings):
     runner = CrawlerRunner(settings)
-    yield runner.crawl(spider_name)
+    crawl_result = yield runner.crawl(spider_name)
     reactor.stop()
+    return crawl_result
 
 def main():
 
@@ -111,7 +112,12 @@ def main():
     else:
         log.info('Starting spider (scheduling crawl)...')
 
-    d = run_spider(spider_name, settings)
+    crawl_stats = None
+
+    def _on_success(result):
+        nonlocal crawl_stats
+        crawl_stats = result
+        return result
 
     def _on_error(f: Failure):
         tb = f.getTraceback()
@@ -126,6 +132,8 @@ def main():
             pass
         return f
 
+    d = run_spider(spider_name, settings)
+    d.addCallback(_on_success)
     d.addErrback(_on_error)
 
     if actor_initialized:
@@ -134,10 +142,33 @@ def main():
         log.info('Running Twisted reactor...')
     reactor.run()
     
-    if actor_initialized:
-        Actor.log.info(f'Spider {spider_name} completed successfully')
+    # Log completion stats
+    if crawl_stats and hasattr(crawl_stats, 'stats'):
+        stats = crawl_stats.stats
+        items_scraped = stats.get('item_scraped_count', 0)
+        pages_crawled = stats.get('response_received_count', 0)
+        http_200 = stats.get('downloader/response_status_count/200', 0)
+        pages_failed = pages_crawled - http_200
+        
+        if actor_initialized:
+            Actor.log.info(
+                f'Spider {spider_name} completed successfully. '
+                f'Stats: {items_scraped} items scraped, {pages_crawled} pages crawled'
+            )
+            if pages_failed > 0:
+                Actor.log.warning(f'{pages_failed} pages failed during crawl')
+        else:
+            log.info(
+                'Spider %s completed successfully. Stats: %s items scraped, %s pages crawled',
+                spider_name, items_scraped, pages_crawled
+            )
+            if pages_failed > 0:
+                log.warning('%s pages failed during crawl', pages_failed)
     else:
-        log.info('Spider %s completed successfully', spider_name)
+        if actor_initialized:
+            Actor.log.info(f'Spider {spider_name} completed successfully')
+        else:
+            log.info('Spider %s completed successfully', spider_name)
     try:
         if actor_initialized:
             loop.run_until_complete(Actor.exit())
