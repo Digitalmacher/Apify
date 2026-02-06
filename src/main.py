@@ -11,11 +11,15 @@ from twisted.python.failure import Failure
 
 
 @inlineCallbacks
-def run_spiders(spider_names, settings):
+def run_spiders(spider_names, settings, log_fn=None):
     """Run multiple spiders sequentially. All results are pushed to the same Apify dataset."""
     runner = CrawlerRunner(settings)
-    for name in spider_names:
+    for i, name in enumerate(spider_names):
+        if log_fn:
+            log_fn(f"Starting spider {i + 1}/{len(spider_names)}: {name}")
         yield runner.crawl(name)
+        if log_fn:
+            log_fn(f"Completed spider: {name}")
     reactor.stop()
 
 def main():
@@ -122,7 +126,13 @@ def main():
     else:
         log.info('Starting spider (scheduling crawl)...')
 
-    d = run_spiders(spider_names, settings)
+    def _log(msg):
+        if actor_initialized:
+            Actor.log.info(msg)
+        else:
+            log.info(msg)
+
+    d = run_spiders(spider_names, settings, log_fn=_log)
 
     def _on_error(f: Failure):
         tb = f.getTraceback()

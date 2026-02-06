@@ -89,3 +89,21 @@ Actor starts
 
 - **Local**: `python -m src` with env `APIFY_INPUT_KEY` or input JSON containing `spider_names`.
 - **Apify**: Run Actor with default input (both spiders) or override `spider_names` to run only one.
+
+---
+
+## Troubleshooting
+
+### "The dataset does not have a schema specified"
+
+Add a dataset schema in `.actor/actor.json` under `storages.dataset`. This defines the structure so Apify can load and display the data. See the `actor.json` in this project.
+
+### Run stops after UKE (second spider never runs)
+
+**Most likely cause: Apify run timeout.** The default run timeout is often 300 seconds. UKE scrapes many doctor profiles (one request per profile); if it takes 5+ minutes, the run is killed before the second spider starts.
+
+**Fix:** In Apify Console → Actor → Settings → Default run options, increase `timeoutSecs` (e.g. 900 or 1800). Or pass `timeoutSecs` when starting a run via the API.
+
+### Do I need multiple runs for multiple spiders?
+
+**No.** One Actor run executes both spiders sequentially in the same process. Both spiders push to the same dataset. You only need multiple runs if you want to run them in parallel (e.g. via Apify's Batch Runner or an orchestrator Actor).
