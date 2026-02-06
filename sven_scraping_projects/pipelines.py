@@ -31,13 +31,15 @@ class ApifyPipeline:
         if hasattr(item, 'asdict'):
             item_dict = item.asdict()
         elif isinstance(item, dict):
-            item_dict = item
+            item_dict = dict(item)
         else:
             adapter = ItemAdapter(item)
             item_dict = dict(adapter)
-        
+
+        # Add source so we can identify which spider produced each record
+        item_dict['source'] = spider.name
         self.items.append(item_dict)
-        
+
         return item
     
     def close_spider(self, spider):

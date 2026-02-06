@@ -11,9 +11,11 @@ from twisted.python.failure import Failure
 
 
 @inlineCallbacks
-def run_spider(spider_name, settings):
+def run_spiders(spider_names, settings):
+    """Run multiple spiders sequentially. All results are pushed to the same Apify dataset."""
     runner = CrawlerRunner(settings)
-    yield runner.crawl(spider_name)
+    for name in spider_names:
+        yield runner.crawl(name)
     reactor.stop()
 
 def main():
@@ -50,18 +52,27 @@ def main():
     else:
         log.info('Starting Scrapy spider (Apify SDK not initialized; using fallbacks)...')
 
-    spider_name = 'uke' 
-    
+    # Default: run both UKE and Apotheker Kammer spiders
+    default_spiders = ['uke', 'apothekerkammer-hamburg']
+    spider_names = default_spiders
+
     try:
-        spider_name = input_data.get('spider_name', spider_name)
+        if 'spider_names' in input_data and input_data['spider_names']:
+            spider_names = list(input_data['spider_names'])
+        elif 'spider_name' in input_data and input_data['spider_name']:
+            # Legacy: single spider_name
+            spider_names = [input_data['spider_name']]
     except Exception as e:
-        log.warning('Could not read "spider_name" from input; using fallback. Error: %s', e)
-        spider_name = os.environ.get('APIFY_INPUT_SPIDER_NAME', spider_name)
-    
+        log.warning('Could not read spider config from input; using env or default. Error: %s', e)
+        env_val = os.environ.get('APIFY_INPUT_SPIDER_NAMES', ','.join(default_spiders))
+        spider_names = [n.strip() for n in env_val.split(',') if n.strip()]
+    if not spider_names:
+        spider_names = default_spiders
+
     if actor_initialized:
-        Actor.log.info(f'Running spider: {spider_name}')
+        Actor.log.info(f'Running spiders: {spider_names}')
     else:
-        log.info('Running spider: %s', spider_name)
+        log.info('Running spiders: %s', spider_names)
     
     if actor_initialized:
         Actor.log.info('Loading Scrapy project settings...')
@@ -111,7 +122,7 @@ def main():
     else:
         log.info('Starting spider (scheduling crawl)...')
 
-    d = run_spider(spider_name, settings)
+    d = run_spiders(spider_names, settings)
 
     def _on_error(f: Failure):
         tb = f.getTraceback()
@@ -135,9 +146,9 @@ def main():
     reactor.run()
     
     if actor_initialized:
-        Actor.log.info(f'Spider {spider_name} completed successfully')
+        Actor.log.info(f'Spiders {spider_names} completed successfully')
     else:
-        log.info('Spider %s completed successfully', spider_name)
+        log.info('Spiders %s completed successfully', spider_names)
     try:
         if actor_initialized:
             loop.run_until_complete(Actor.exit())
