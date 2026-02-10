@@ -1,4 +1,7 @@
+import threading
 from itemadapter import ItemAdapter
+from twisted.internet import reactor
+
 from apify import Actor
 
 
@@ -47,28 +50,48 @@ class ApifyPipeline:
             if self._apify_available:
                 Actor.log.info(f'ApifyPipeline: No items to push for spider {spider.name}')
             return
-        
+
         if not self._apify_available:
             import logging
             logging.warning(f'ApifyPipeline: {len(self.items)} items collected but Apify Actor not available')
             return
-        
-        Actor.log.info(f'ApifyPipeline: Pushing {len(self.items)} items to Apify dataset...')
-        
-        try:
 
-            import asyncio
-            
-            async def push_all_items():
-                """Push all items to Apify dataset."""
-                for item in self.items:
-                    await Actor.push_data(item)
-            
-            asyncio.run(push_all_items())
-            
-            Actor.log.info(f'ApifyPipeline: Successfully pushed {len(self.items)} items to dataset')
-        except Exception as e:
-            Actor.log.error(f'ApifyPipeline: Error pushing items to dataset: {e}')
-            Actor.log.error(f'ApifyPipeline: Failed to push {len(self.items)} items')
-        
-        Actor.log.info(f'ApifyPipeline: Spider {spider.name} closed')
+        # Run async push in a thread and return a Deferred so we don't block the Twisted
+        # reactor. Blocking here was preventing the crawl() Deferred from firing and
+        # the next spider from starting (dormant state).
+        from twisted.internet.defer import Deferred
+        import asyncio
+
+        d = Deferred()
+        items_to_push = list(self.items)
+
+        def run_push_in_thread():
+            err = None
+            try:
+                async def push_all_items():
+                    for item in items_to_push:
+                        await Actor.push_data(item)
+
+                asyncio.run(push_all_items())
+                if self._apify_available:
+                    Actor.log.info(f'ApifyPipeline: Successfully pushed {len(items_to_push)} items to dataset')
+            except Exception as e:
+                err = e
+                if self._apify_available:
+                    Actor.log.error(f'ApifyPipeline: Error pushing items to dataset: {e}')
+            # Signal completion on the reactor thread so the crawler can finish
+            reactor.callFromThread(_done, err)
+
+        def _done(exception):
+            if exception is not None:
+                from twisted.python.failure import Failure
+                d.errback(Failure(exception))
+            else:
+                d.callback(None)
+            if self._apify_available:
+                Actor.log.info(f'ApifyPipeline: Spider {spider.name} closed')
+
+        Actor.log.info(f'ApifyPipeline: Pushing {len(items_to_push)} items to Apify dataset...')
+        thread = threading.Thread(target=run_push_in_thread, daemon=False)
+        thread.start()
+        return d

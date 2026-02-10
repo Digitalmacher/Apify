@@ -16,10 +16,10 @@ def run_spiders(spider_names, settings, log_fn=None):
     runner = CrawlerRunner(settings)
     for i, name in enumerate(spider_names):
         if log_fn:
-            log_fn(f"Starting spider {i + 1}/{len(spider_names)}: {name}")
+            log_fn(f"Scraper {i + 1}/{len(spider_names)} ready: starting '{name}'")
         yield runner.crawl(name)
         if log_fn:
-            log_fn(f"Completed spider: {name}")
+            log_fn(f"Scraper '{name}' finished (crawl completed, next will start if any)")
     reactor.stop()
 
 def main():
