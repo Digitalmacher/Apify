@@ -5,14 +5,8 @@ from twisted.internet import reactor
 from apify import Actor
 
 
-class SvenScrapingProjectsPipeline:
-    def process_item(self, item, spider):
-        return item
-
-
 class ApifyPipeline:
 
-    
     def __init__(self):
         self.items = []
         self._apify_available = False

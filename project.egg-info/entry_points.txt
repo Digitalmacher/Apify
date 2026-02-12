@@ -1,2 +1,0 @@
-[scrapy]
-settings = sven_scraping_projects.settings

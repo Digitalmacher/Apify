@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+
+# macOS
+.DS_Store
+
+# Local / env
+.env
+*.log
