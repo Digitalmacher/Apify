@@ -5,6 +5,23 @@ from twisted.internet import reactor
 from apify import Actor
 
 
+def _normalize_for_dataset(obj):
+    """
+    Make item JSON-schema safe for Apify dataset: no None (use ""),
+    only JSON-serializable types. Avoids 'Schema validation failed' when
+    different spiders (e.g. KVHH) send null or different shapes.
+    """
+    if obj is None:
+        return ""
+    if isinstance(obj, dict):
+        return {k: _normalize_for_dataset(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_normalize_for_dataset(v) for v in obj]
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    return str(obj)
+
+
 class ApifyPipeline:
 
     def __init__(self):
@@ -35,7 +52,8 @@ class ApifyPipeline:
 
         # Add source so we can identify which spider produced each record
         item_dict['source'] = spider.name
-        self.items.append(item_dict)
+        # Normalize so all spiders pass Apify dataset schema (no None → use "")
+        self.items.append(_normalize_for_dataset(item_dict))
 
         return item
     
