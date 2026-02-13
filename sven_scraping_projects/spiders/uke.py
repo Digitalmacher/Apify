@@ -74,9 +74,9 @@ class UkeSpider(Spider):
     # Spider-specific settings (override project-wide defaults)
     custom_settings = {
         'ROBOTSTXT_OBEY': False,
-        'CONCURRENT_REQUESTS': 16,
-        'CONCURRENT_REQUESTS_PER_DOMAIN': 16,
-        'DOWNLOAD_DELAY': 0.5,
+        'CONCURRENT_REQUESTS': 64,
+        'CONCURRENT_REQUESTS_PER_DOMAIN': 32,
+        'DOWNLOAD_DELAY': 0,
         'RETRY_ENABLED': True,
         'RETRY_TIMES': 3,
         'DOWNLOAD_TIMEOUT': 180,

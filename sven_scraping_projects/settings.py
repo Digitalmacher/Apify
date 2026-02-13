@@ -37,10 +37,12 @@ TELNETCONSOLE_ENABLED = False
 # Obey robots.txt rules
 # ROBOTSTXT_OBEY = False
 
-# # Concurrency and throttling settings
-# CONCURRENT_REQUESTS = 16
-# CONCURRENT_REQUESTS_PER_DOMAIN = 16
-# DOWNLOAD_DELAY = 0.5
+# Concurrency and speed: high throughput for profile/list crawls (JS crawler used ~20 concurrent, no delay).
+# KVHH ~5.8k pages: with 32 concurrent and 0 delay, expect ~3–6 min instead of ~60 min.
+CONCURRENT_REQUESTS = 64
+CONCURRENT_REQUESTS_PER_DOMAIN = 32
+DOWNLOAD_DELAY = 0
+
 
 # Disable cookies (enabled by default)
 #COOKIES_ENABLED = False

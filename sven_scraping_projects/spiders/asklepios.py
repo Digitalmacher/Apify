@@ -11,9 +11,9 @@ class AsklepiosSpider(Spider):
 
     custom_settings = {
         "ROBOTSTXT_OBEY": False,
-        "CONCURRENT_REQUESTS": 16,
-        "CONCURRENT_REQUESTS_PER_DOMAIN": 16,
-        "DOWNLOAD_DELAY": 0.5,
+        "CONCURRENT_REQUESTS": 64,
+        "CONCURRENT_REQUESTS_PER_DOMAIN": 32,
+        "DOWNLOAD_DELAY": 0,
         "USER_AGENT": (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
