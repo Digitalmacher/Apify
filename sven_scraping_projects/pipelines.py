@@ -72,10 +72,35 @@ class ApifyPipeline:
         # reactor. Blocking here was preventing the crawl() Deferred from firing and
         # the next spider from starting (dormant state).
         from twisted.internet.defer import Deferred
+        from twisted.python.failure import Failure
         import asyncio
 
         d = Deferred()
         items_to_push = list(self.items)
+        done_called = []
+        timeout_handle_ref = []
+
+        def _done(exception):
+            if done_called:
+                return
+            done_called.append(True)
+            if timeout_handle_ref and timeout_handle_ref[0].active():
+                timeout_handle_ref[0].cancel()
+            if exception is not None:
+                d.errback(Failure(exception))
+            else:
+                d.callback(None)
+            if self._apify_available:
+                Actor.log.info(f'ApifyPipeline: Spider {spider.name} closed')
+
+        # Safety: ensure we never hang forever if push stalls (e.g. network)
+        PUSH_TIMEOUT_SEC = 7200  # 2 hours
+        timeout_handle_ref.append(
+            reactor.callLater(
+                PUSH_TIMEOUT_SEC,
+                lambda: _done(TimeoutError(f'Apify push did not complete within {PUSH_TIMEOUT_SEC}s'))
+            )
+        )
 
         def run_push_in_thread():
             err = None
@@ -91,17 +116,7 @@ class ApifyPipeline:
                 err = e
                 if self._apify_available:
                     Actor.log.error(f'ApifyPipeline: Error pushing items to dataset: {e}')
-            # Signal completion on the reactor thread so the crawler can finish
             reactor.callFromThread(_done, err)
-
-        def _done(exception):
-            if exception is not None:
-                from twisted.python.failure import Failure
-                d.errback(Failure(exception))
-            else:
-                d.callback(None)
-            if self._apify_available:
-                Actor.log.info(f'ApifyPipeline: Spider {spider.name} closed')
 
         Actor.log.info(f'ApifyPipeline: Pushing {len(items_to_push)} items to Apify dataset...')
         thread = threading.Thread(target=run_push_in_thread, daemon=False)
