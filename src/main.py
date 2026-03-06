@@ -56,8 +56,8 @@ def main():
     else:
         log.info('Starting Scrapy spider (Apify SDK not initialized; using fallbacks)...')
 
-    # Default: run UKE, Apotheker Kammer, Asklepios, then KVHH
-    default_spiders = ['uke', 'apothekerkammer-hamburg', 'asklepios', 'kvhh']
+    # Default: run UKE, Apotheker Kammer, Asklepios, KVHH, then Zahnärzte (KZV Hamburg)
+    default_spiders = ['uke', 'apothekerkammer-hamburg', 'asklepios', 'kvhh', 'zahnaerzte_hh']
     spider_names = default_spiders
 
     try:
