@@ -1,5 +1,9 @@
 # Asklepios physician profile directory.
 # Discovery: sitemap-index.xml → profile sitemap → /profil/ pages.
+#
+# Throttling: asklepios.com returns 503/504 under high load. Use conservative
+# concurrency, delay, AutoThrottle, and retries to avoid rate limiting and
+# server overload.
 
 from scrapy import Spider
 from scrapy.http import Request
@@ -11,9 +15,18 @@ class AsklepiosSpider(Spider):
 
     custom_settings = {
         "ROBOTSTXT_OBEY": False,
-        "CONCURRENT_REQUESTS": 128,
-        "CONCURRENT_REQUESTS_PER_DOMAIN": 96,
-        "DOWNLOAD_DELAY": 0,
+        "CONCURRENT_REQUESTS": 64,
+        "CONCURRENT_REQUESTS_PER_DOMAIN": 8,
+        "DOWNLOAD_DELAY": 0.5,
+        "DOWNLOAD_TIMEOUT": 90,
+        "RETRY_ENABLED": True,
+        "RETRY_TIMES": 5,
+        "RETRY_HTTP_CODES": [500, 502, 503, 504, 408, 429],
+        "AUTOTHROTTLE_ENABLED": True,
+        "AUTOTHROTTLE_START_DELAY": 1.0,
+        "AUTOTHROTTLE_MAX_DELAY": 30.0,
+        "AUTOTHROTTLE_TARGET_CONCURRENCY": 2.0,
+        "AUTOTHROTTLE_DEBUG": False,
         "USER_AGENT": (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
