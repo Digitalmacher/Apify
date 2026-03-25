@@ -22,6 +22,240 @@ def _normalize_for_dataset(obj):
     return str(obj)
 
 
+def _split_csvish(value):
+    """
+    Convert comma-separated (or already-list) values into a clean list of strings.
+    Keeps stable output shape for downstream consumers.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if not isinstance(value, str):
+        value = str(value)
+    s = value.strip()
+    if not s:
+        return []
+    # Many spiders join with ", " already. Avoid splitting URLs by only splitting on commas.
+    parts = [p.strip() for p in s.split(",")]
+    return [p for p in parts if p]
+
+
+def _first_non_empty(*values):
+    for v in values:
+        if v is None:
+            continue
+        if isinstance(v, str):
+            if v.strip():
+                return v.strip()
+            continue
+        return v
+    return ""
+
+
+def _canonicalize_item(item_dict):
+    """
+    Map spider-specific keys into a canonical schema.
+
+    - Keeps provenance (`source`, `source_url`)
+    - Merges synonymous fields (phone/telephone, website/internet, specialty variants, etc.)
+    - Preserves original payload in `raw_source_fields` for auditability
+    """
+    source = (item_dict.get("source") or "").strip()
+
+    # Basic identity / provenance
+    source_url = _first_non_empty(item_dict.get("url"), item_dict.get("source_url"))
+    display_name = _first_non_empty(item_dict.get("display_name"), item_dict.get("name"))
+
+    name_title = _first_non_empty(item_dict.get("name_title"), item_dict.get("title"))
+    first_name = _first_non_empty(item_dict.get("first_name"))
+    last_name = _first_non_empty(item_dict.get("last_name"))
+
+    # Contact
+    phone = _first_non_empty(item_dict.get("phone"), item_dict.get("telephone"))
+    fax = _first_non_empty(item_dict.get("fax"))
+    email = _first_non_empty(item_dict.get("email"))
+    website_url = _first_non_empty(item_dict.get("website"), item_dict.get("internet"), item_dict.get("website_url"))
+
+    # Location
+    address_freeform = _first_non_empty(item_dict.get("address"), item_dict.get("address_freeform"))
+    street = _first_non_empty(item_dict.get("street"))
+    postal_code = _first_non_empty(item_dict.get("postal_code"), item_dict.get("zip"))
+    city = _first_non_empty(item_dict.get("city"))
+    location_freeform = _first_non_empty(item_dict.get("location"), item_dict.get("location_freeform"))
+
+    # Role / org
+    job_title = _first_non_empty(item_dict.get("job_title"), item_dict.get("position"))
+    department_or_unit = _first_non_empty(
+        item_dict.get("department_or_unit"),
+        item_dict.get("department"),
+        item_dict.get("einrichtung"),
+    )
+    practice_name = _first_non_empty(item_dict.get("practice_name"))
+    practice_relation = _first_non_empty(item_dict.get("practice_relation"))
+
+    # Domain fields (specialty / expertise / services)
+    primary_specialty = _first_non_empty(item_dict.get("primary_specialty"), item_dict.get("specialty"))
+    responsibility_area = _first_non_empty(
+        item_dict.get("responsibility_area"),
+        item_dict.get("area_of_responsibility"),
+    )
+
+    # Collect specialties-like signals into a list (deduped, stable order)
+    specialties_list = []
+    for v in (
+        primary_specialty,
+        item_dict.get("specialization"),
+        item_dict.get("specialties"),
+        item_dict.get("areas_of_expertise"),
+    ):
+        specialties_list.extend(_split_csvish(v))
+    # Some spiders misuse position/area_of_work as specialty labels; normalize per source below.
+
+    services_or_focus = []
+    for v in (
+        item_dict.get("services_or_focus_areas"),
+        item_dict.get("main_areas_of_activity"),
+        item_dict.get("areas_of_activity"),
+    ):
+        services_or_focus.extend(_split_csvish(v))
+
+    languages = _split_csvish(item_dict.get("languages"))
+
+    # Extras
+    image_url = _first_non_empty(item_dict.get("image_url"), item_dict.get("img_url"))
+    career_highlights = _first_non_empty(item_dict.get("career_highlights"))
+    llm_content = _first_non_empty(item_dict.get("llm_content"))
+
+    memberships = []
+    memberships.extend(_split_csvish(item_dict.get("memberships")))
+    memberships.extend(_split_csvish(item_dict.get("field_membership")))
+
+    affiliated_facilities = []
+    if item_dict.get("affiliated_facilities"):
+        affiliated_facilities.extend(_split_csvish(item_dict.get("affiliated_facilities")))
+    else:
+        # Asklepios legacy: clinic_1/clinic_2 are multi-line strings; keep as-is entries.
+        for k in ("clinic_1", "clinic_2"):
+            v = item_dict.get(k)
+            if isinstance(v, str) and v.strip():
+                affiliated_facilities.append(v.strip())
+
+    # Source-specific fixes to prevent semantic mixing
+    if source == "kvhh":
+        # kvhh sets multiple synonymous keys to the same Fachgebiet.
+        kvhh_specialty = _first_non_empty(
+            item_dict.get("specialization"),
+            item_dict.get("position"),
+            item_dict.get("area_of_work"),
+            item_dict.get("department"),
+        )
+        if kvhh_specialty:
+            primary_specialty = kvhh_specialty
+            specialties_list = _split_csvish(kvhh_specialty)
+        # kvhh "Leistungen" are services/focus areas
+        services_or_focus = _split_csvish(item_dict.get("main_areas_of_activity"))
+
+    if source == "zahnaerzte_hh":
+        # specialization is effectively their main specialty list.
+        if not primary_specialty:
+            primary_specialty = _first_non_empty(item_dict.get("specialization"))
+        if item_dict.get("specialization"):
+            specialties_list = _split_csvish(item_dict.get("specialization"))
+        # They also set position/area_of_work/main_areas_of_activity to same value; treat as specialty list already.
+        if not services_or_focus:
+            services_or_focus = _split_csvish(item_dict.get("main_areas_of_activity"))
+
+    if source == "uke":
+        # UKE work_area is usually contact/location-like; do NOT treat as specialty.
+        # Keep it as department/unit if department missing, else preserve in raw.
+        if not department_or_unit:
+            department_or_unit = _first_non_empty(item_dict.get("work_area"))
+
+    if source == "asklepios":
+        # Asklepios specialty is the medical specialty; position is job title.
+        if not primary_specialty:
+            primary_specialty = _first_non_empty(item_dict.get("specialty"))
+
+    # Deduplicate list fields while preserving order
+    def _dedupe(seq):
+        seen = set()
+        out = []
+        for x in seq:
+            x = (x or "").strip() if isinstance(x, str) else str(x).strip()
+            if not x or x in seen:
+                continue
+            seen.add(x)
+            out.append(x)
+        return out
+
+    specialties = _dedupe(specialties_list)
+    services_or_focus_areas = _dedupe(services_or_focus)
+    languages = _dedupe(languages)
+    memberships = _dedupe(memberships)
+    affiliated_facilities = _dedupe(affiliated_facilities)
+
+    # Entity type inference (minimal, consistent with current sources)
+    entity_type = _first_non_empty(item_dict.get("entity_type"))
+    if not entity_type:
+        if source in {"apothekerkammer-hamburg"}:
+            entity_type = "organization"
+        else:
+            entity_type = "person"
+
+    canonical = {
+        # Provenance
+        "source": source,
+        "source_url": source_url,
+
+        # Entity
+        "entity_type": entity_type,
+        "display_name": display_name,
+        "name_title": name_title,
+        "first_name": first_name,
+        "last_name": last_name,
+
+        # Contact
+        "phone": phone,
+        "fax": fax,
+        "email": email,
+        "website_url": website_url,
+
+        # Location
+        "address_freeform": address_freeform,
+        "street": street,
+        "postal_code": postal_code,
+        "city": city,
+        "location_freeform": location_freeform,
+
+        # Org/role
+        "job_title": job_title,
+        "department_or_unit": department_or_unit,
+        "practice_name": practice_name,
+        "practice_relation": practice_relation,
+
+        # Domain
+        "primary_specialty": primary_specialty,
+        "specialties": specialties,
+        "services_or_focus_areas": services_or_focus_areas,
+        "responsibility_area": responsibility_area,
+        "languages": languages,
+        "memberships": memberships,
+
+        # Extras
+        "image_url": image_url,
+        "career_highlights": career_highlights,
+        "affiliated_facilities": affiliated_facilities,
+        "llm_content": llm_content,
+
+        # Audit / debugging escape hatch
+        "raw_source_fields": dict(item_dict),
+    }
+
+    # Drop empty-string-only keys? Keep as-is: dataset consumers may prefer stable keys.
+    return canonical
+
+
 class ApifyPipeline:
 
     def __init__(self):
@@ -52,8 +286,9 @@ class ApifyPipeline:
 
         # Add source so we can identify which spider produced each record
         item_dict['source'] = spider.name
-        # Normalize so all spiders pass Apify dataset schema (no None → use "")
-        self.items.append(_normalize_for_dataset(item_dict))
+        # Canonicalize + normalize so all spiders share one schema
+        canonical = _canonicalize_item(item_dict)
+        self.items.append(_normalize_for_dataset(canonical))
 
         return item
     
