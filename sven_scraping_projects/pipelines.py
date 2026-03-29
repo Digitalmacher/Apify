@@ -285,6 +285,63 @@ def _flatten_for_apify_dataset_schema(item):
     return out
 
 
+def _add_legacy_dataset_aliases(rec):
+    """
+    Original actor schema + UI views expect name, url, telephone alongside
+    canonical keys. Duplicate here so validation and table views stay populated.
+    """
+    if not isinstance(rec, dict):
+        return rec
+    out = dict(rec)
+    # Legacy / overview view fields (same semantics as canonical)
+    if "name" not in out or out.get("name") == "":
+        out["name"] = out.get("display_name") or ""
+    if "url" not in out or out.get("url") == "":
+        out["url"] = out.get("source_url") or ""
+    if "telephone" not in out or out.get("telephone") == "":
+        out["telephone"] = out.get("phone") or ""
+    if "title" not in out or out.get("title") == "":
+        out["title"] = out.get("name_title") or ""
+    if "department" not in out or out.get("department") == "":
+        out["department"] = out.get("department_or_unit") or ""
+    if "work_area" not in out or out.get("work_area") == "":
+        out["work_area"] = out.get("location_freeform") or ""
+    if "location" not in out or out.get("location") == "":
+        out["location"] = out.get("location_freeform") or ""
+    if "areas_of_expertise" not in out or out.get("areas_of_expertise") == "":
+        out["areas_of_expertise"] = out.get("specialties") or ""
+    if "areas_of_activity" not in out or out.get("areas_of_activity") == "":
+        out["areas_of_activity"] = out.get("services_or_focus_areas") or ""
+    if "website" not in out or out.get("website") == "":
+        out["website"] = out.get("website_url") or ""
+    if "address" not in out or out.get("address") == "":
+        out["address"] = out.get("address_freeform") or ""
+    return out
+
+
+def _stringify_apify_dataset_record(rec):
+    """
+    Apify dataset validation expects string-typed fields (see .actor/actor.json).
+    Spiders sometimes yield ints (e.g. PLZ as number from JSON); _normalize_for_dataset
+    preserves int/float/bool, which still fails schema validation.
+    """
+    if not isinstance(rec, dict):
+        return rec
+    out = {}
+    for k, v in rec.items():
+        if v is None:
+            out[k] = ""
+        elif isinstance(v, str):
+            out[k] = v
+        elif isinstance(v, bool):
+            out[k] = "true" if v else "false"
+        elif isinstance(v, (int, float)):
+            out[k] = str(v)
+        else:
+            out[k] = str(v)
+    return out
+
+
 class ApifyPipeline:
 
     def __init__(self):
@@ -318,7 +375,9 @@ class ApifyPipeline:
         # Canonicalize + normalize so all spiders share one schema
         canonical = _canonicalize_item(item_dict)
         flattened = _flatten_for_apify_dataset_schema(canonical)
-        self.items.append(_normalize_for_dataset(flattened))
+        normalized = _normalize_for_dataset(flattened)
+        with_aliases = _add_legacy_dataset_aliases(normalized)
+        self.items.append(_stringify_apify_dataset_record(with_aliases))
 
         return item
     
