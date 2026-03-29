@@ -1,3 +1,4 @@
+import json
 import threading
 from itemadapter import ItemAdapter
 from twisted.internet import reactor
@@ -256,6 +257,34 @@ def _canonicalize_item(item_dict):
     return canonical
 
 
+def _flatten_for_apify_dataset_schema(item):
+    """
+    Apify dataset schema in .actor/actor.json types several keys as `string`
+    (e.g. specialties, languages). Arrays and nested objects fail validation.
+
+    - list -> comma-separated string
+    - dict (e.g. raw_source_fields) -> JSON string
+    """
+    out = {}
+    for k, v in item.items():
+        if k == "raw_source_fields" and isinstance(v, dict):
+            out[k] = json.dumps(_normalize_for_dataset(v), ensure_ascii=False)
+        elif isinstance(v, list):
+            parts = []
+            for x in v:
+                if x is None:
+                    continue
+                s = str(x).strip()
+                if s:
+                    parts.append(s)
+            out[k] = ", ".join(parts)
+        elif isinstance(v, dict):
+            out[k] = json.dumps(_normalize_for_dataset(v), ensure_ascii=False)
+        else:
+            out[k] = v
+    return out
+
+
 class ApifyPipeline:
 
     def __init__(self):
@@ -288,7 +317,8 @@ class ApifyPipeline:
         item_dict['source'] = spider.name
         # Canonicalize + normalize so all spiders share one schema
         canonical = _canonicalize_item(item_dict)
-        self.items.append(_normalize_for_dataset(canonical))
+        flattened = _flatten_for_apify_dataset_schema(canonical)
+        self.items.append(_normalize_for_dataset(flattened))
 
         return item
     
