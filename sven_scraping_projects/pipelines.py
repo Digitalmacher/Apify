@@ -1,4 +1,6 @@
 import json
+import asyncio
+import queue
 import threading
 from itemadapter import ItemAdapter
 from twisted.internet import reactor
@@ -353,6 +355,12 @@ class ApifyPipeline:
     def __init__(self):
         self.items = []
         self._apify_available = False
+        self._push_queue = None
+        self._push_worker = None
+        self._push_worker_stop = None
+        self._push_worker_err = None
+        self._push_batch_size = 500
+        self._push_flush_interval_s = 2.0
     
     def open_spider(self, spider):
         # Check if Apify Actor is available
@@ -365,6 +373,67 @@ class ApifyPipeline:
             logging.warning('ApifyPipeline: Apify Actor not available, items will be collected but not pushed')
         
         self.items = []
+
+        # On Apify, push incrementally during the crawl so platform migrations (SIGTERM)
+        # don't interrupt a single large final push in close_spider.
+        if self._apify_available:
+            self._push_queue = queue.Queue(maxsize=5000)
+            self._push_worker_stop = threading.Event()
+            self._push_worker_err = []
+
+            def _worker():
+                err = None
+                try:
+                    async def _run():
+                        batch = []
+                        last_flush = asyncio.get_event_loop().time()
+
+                        async def _flush():
+                            nonlocal batch, last_flush
+                            if not batch:
+                                return
+                            chunk = batch
+                            batch = []
+                            await Actor.push_data(chunk)
+                            Actor.log.info(
+                                "ApifyPipeline: Pushed %d items (streaming)",
+                                len(chunk),
+                            )
+                            last_flush = asyncio.get_event_loop().time()
+
+                        while True:
+                            if self._push_worker_stop.is_set() and self._push_queue.empty():
+                                break
+
+                            try:
+                                rec = self._push_queue.get(timeout=0.25)
+                                batch.append(rec)
+                                # Mark done immediately; the worker owns the batch.
+                                self._push_queue.task_done()
+                            except queue.Empty:
+                                rec = None
+
+                            now = asyncio.get_event_loop().time()
+                            if len(batch) >= self._push_batch_size:
+                                await _flush()
+                            elif batch and (now - last_flush) >= self._push_flush_interval_s:
+                                await _flush()
+
+                        # Final flush on shutdown
+                        await _flush()
+
+                    asyncio.run(_run())
+                except Exception as e:
+                    err = e
+                    try:
+                        Actor.log.error(f"ApifyPipeline: Push worker crashed: {e!r}")
+                    except Exception:
+                        pass
+                if err is not None:
+                    self._push_worker_err.append(err)
+
+            self._push_worker = threading.Thread(target=_worker, daemon=True)
+            self._push_worker.start()
     
     def process_item(self, item, spider):
 
@@ -383,30 +452,27 @@ class ApifyPipeline:
         flattened = _flatten_for_apify_dataset_schema(canonical)
         normalized = _normalize_for_dataset(flattened)
         with_aliases = _add_legacy_dataset_aliases(normalized)
-        self.items.append(_stringify_apify_dataset_record(with_aliases))
+        rec = _stringify_apify_dataset_record(with_aliases)
+
+        if self._apify_available and self._push_queue is not None:
+            # Best-effort streaming push. If the queue is full (temporary API slowdown),
+            # fall back to in-memory buffer so we don't drop data.
+            try:
+                self._push_queue.put_nowait(rec)
+            except queue.Full:
+                self.items.append(rec)
+        else:
+            self.items.append(rec)
 
         return item
     
     def close_spider(self, spider):
-        if not self.items:
-            if self._apify_available:
-                Actor.log.info(f'ApifyPipeline: No items to push for spider {spider.name}')
-            return
-
-        if not self._apify_available:
-            import logging
-            logging.warning(f'ApifyPipeline: {len(self.items)} items collected but Apify Actor not available')
-            return
-
         # Run async push in a thread and return a Deferred so we don't block the Twisted
-        # reactor. Blocking here was preventing the crawl() Deferred from firing and
-        # the next spider from starting (dormant state).
+        # reactor. This ensures crawls complete cleanly and the next spider can start.
         from twisted.internet.defer import Deferred
         from twisted.python.failure import Failure
-        import asyncio
 
         d = Deferred()
-        items_to_push = list(self.items)
         done_called = []
         timeout_handle_ref = []
 
@@ -435,30 +501,54 @@ class ApifyPipeline:
         def run_push_in_thread():
             err = None
             try:
-                async def push_all_items():
-                    # Push in batches to avoid slow per-item API calls.
-                    # This is critical on Apify where the Actor can receive SIGTERM
-                    # during migrations; fewer requests => higher chance to finish.
-                    BATCH_SIZE = 500
-                    total = len(items_to_push)
-                    for i in range(0, total, BATCH_SIZE):
-                        chunk = items_to_push[i : i + BATCH_SIZE]
-                        await Actor.push_data(chunk)
-                        if self._apify_available:
-                            Actor.log.info(
-                                f"ApifyPipeline: Pushed {min(i + BATCH_SIZE, total)}/{total} items"
-                            )
+                # Signal streaming worker to stop and flush.
+                if self._push_worker_stop is not None:
+                    self._push_worker_stop.set()
 
-                asyncio.run(push_all_items())
-                if self._apify_available:
-                    Actor.log.info(f'ApifyPipeline: Successfully pushed {len(items_to_push)} items to dataset')
+                # Push any overflow items that couldn't be queued.
+                items_to_push = list(self.items)
+                self.items = []
+                if items_to_push:
+                    async def push_overflow():
+                        BATCH_SIZE = self._push_batch_size
+                        total = len(items_to_push)
+                        for i in range(0, total, BATCH_SIZE):
+                            chunk = items_to_push[i : i + BATCH_SIZE]
+                            await Actor.push_data(chunk)
+                            Actor.log.info(
+                                "ApifyPipeline: Pushed %d/%d overflow items",
+                                min(i + BATCH_SIZE, total),
+                                total,
+                            )
+                    asyncio.run(push_overflow())
+
+                # Wait for streaming worker to finish flushing.
+                if self._push_worker is not None:
+                    self._push_worker.join(timeout=600)
+
+                # Surface any worker errors.
+                if self._push_worker_err:
+                    raise self._push_worker_err[0]
             except Exception as e:
                 err = e
                 if self._apify_available:
                     Actor.log.error(f'ApifyPipeline: Error pushing items to dataset: {e}')
             reactor.callFromThread(_done, err)
 
-        Actor.log.info(f'ApifyPipeline: Pushing {len(items_to_push)} items to Apify dataset...')
-        thread = threading.Thread(target=run_push_in_thread, daemon=False)
+        if not self._apify_available:
+            # Local / non-Apify runs: nothing to push.
+            import logging
+            if self.items:
+                logging.warning(
+                    f'ApifyPipeline: {len(self.items)} items collected but Apify Actor not available'
+                )
+            return
+
+        Actor.log.info(
+            "ApifyPipeline: Finalizing push for spider %s (streaming flush + overflow=%d)...",
+            spider.name,
+            len(self.items),
+        )
+        thread = threading.Thread(target=run_push_in_thread, daemon=True)
         thread.start()
         return d
