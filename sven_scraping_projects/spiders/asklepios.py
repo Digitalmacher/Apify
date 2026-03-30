@@ -5,8 +5,12 @@
 # concurrency, delay, AutoThrottle, and retries to avoid rate limiting and
 # server overload.
 
+import gzip
+from io import BytesIO
+
 from scrapy import Spider
 from scrapy.http import Request
+from parsel import Selector
 
 
 class AsklepiosSpider(Spider):
@@ -70,21 +74,66 @@ class AsklepiosSpider(Spider):
             callback=self.parse_sitemap_index,
         )
 
+    @staticmethod
+    def _extract_sitemap_locs(response):
+        """
+        Extract <loc> URLs from a sitemap or sitemap index.
+        Handles plain XML and .xml.gz responses.
+        """
+        body = response.body or b""
+        # Some sitemaps are served as .gz or with gzip content.
+        if response.url.endswith(".gz"):
+            try:
+                body = gzip.GzipFile(fileobj=BytesIO(body)).read()
+            except Exception:
+                # Fall back to raw body; selector will likely yield nothing.
+                pass
+
+        text = None
+        try:
+            text = body.decode("utf-8", errors="replace")
+        except Exception:
+            text = (response.text or "")
+
+        sel = Selector(text=text)
+        return [u.strip() for u in sel.xpath("//*[local-name()='loc']/text()").getall() if u and u.strip()]
+
     def parse_sitemap_index(self, response):
-        for url in response.xpath("//text()").getall():
-            url = (url or "").strip()
-            if url and "/konzern@PROFILE-" in url:
-                yield Request(url, callback=self.parse_profile_sitemap)
+        sitemap_urls = self._extract_sitemap_locs(response)
+        self.logger.info("Asklepios sitemap-index: found %d sitemap URLs", len(sitemap_urls))
+        # Be permissive: follow all sitemap URLs; filtering by a specific naming convention is brittle.
+        for url in sitemap_urls:
+            yield Request(url, callback=self.parse_profile_sitemap)
 
     def parse_profile_sitemap(self, response):
-        for url in response.xpath("//text()").getall():
-            url = (url or "").strip()
-            if url and "/profil/" in url:
-                yield Request(
-                    url,
-                    headers=self.profile_headers,
-                    callback=self.parse_profile,
-                )
+        locs = self._extract_sitemap_locs(response)
+        if not locs:
+            self.logger.warning("Asklepios sitemap: no <loc> found for %s", response.url)
+            return
+
+        profile_urls = []
+        for url in locs:
+            # Primary pattern observed historically
+            if "/profil/" in url:
+                profile_urls.append(url)
+                continue
+            # Fallback patterns (site may change language/paths)
+            if "/profile/" in url or "/arzt" in url or "/aerzte" in url:
+                profile_urls.append(url)
+
+        self.logger.info(
+            "Asklepios sitemap: %d locs, scheduled %d profile URLs (%s)",
+            len(locs),
+            len(profile_urls),
+            response.url,
+        )
+
+        for url in profile_urls:
+            yield Request(
+                url,
+                headers=self.profile_headers,
+                callback=self.parse_profile,
+            )
 
     def parse_profile(self, response):
         clinics = []

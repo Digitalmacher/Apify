@@ -63,7 +63,18 @@
         "overview": {
           "title": "Results",
           "transformation": {
-            "fields": ["source", "name", "url", "title", "department", "address", "phone", "telephone", "email"]
+            "fields": [
+              "source",
+              "name",
+              "url",
+              "job_title",
+              "primary_specialty",
+              "department",
+              "address",
+              "phone",
+              "email",
+              "website"
+            ]
           },
           "display": {
             "component": "table",
@@ -71,12 +82,13 @@
               "source": { "label": "Source", "format": "text" },
               "name": { "label": "Name", "format": "text" },
               "url": { "label": "URL", "format": "link" },
-              "title": { "label": "Title", "format": "text" },
-              "department": { "label": "Department", "format": "text" },
+              "job_title": { "label": "Position", "format": "text" },
+              "primary_specialty": { "label": "Specialty", "format": "text" },
+              "department": { "label": "Department/Unit", "format": "text" },
               "address": { "label": "Address", "format": "text" },
               "phone": { "label": "Phone", "format": "text" },
-              "telephone": { "label": "Telephone", "format": "text" },
-              "email": { "label": "Email", "format": "text" }
+              "email": { "label": "Email", "format": "text" },
+              "website": { "label": "Website", "format": "link" }
             }
           }
         }

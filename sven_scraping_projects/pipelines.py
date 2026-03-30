@@ -68,7 +68,9 @@ def _canonicalize_item(item_dict):
     source_url = _first_non_empty(item_dict.get("url"), item_dict.get("source_url"))
     display_name = _first_non_empty(item_dict.get("display_name"), item_dict.get("name"))
 
-    name_title = _first_non_empty(item_dict.get("name_title"), item_dict.get("title"))
+    # IMPORTANT: spiders use `title` inconsistently (e.g. UKE uses it as job title/role).
+    # `name_title` should be an academic/prefix-like title when we actually have it.
+    name_title = _first_non_empty(item_dict.get("name_title"))
     first_name = _first_non_empty(item_dict.get("first_name"))
     last_name = _first_non_empty(item_dict.get("last_name"))
 
@@ -86,6 +88,7 @@ def _canonicalize_item(item_dict):
     location_freeform = _first_non_empty(item_dict.get("location"), item_dict.get("location_freeform"))
 
     # Role / org
+    # Canonical "position" field (most important for downstream): always map to job_title.
     job_title = _first_non_empty(item_dict.get("job_title"), item_dict.get("position"))
     department_or_unit = _first_non_empty(
         item_dict.get("department_or_unit"),
@@ -168,6 +171,9 @@ def _canonicalize_item(item_dict):
             services_or_focus = _split_csvish(item_dict.get("main_areas_of_activity"))
 
     if source == "uke":
+        # UKE `title` is the role/position shown on profile pages (not academic title).
+        if not job_title:
+            job_title = _first_non_empty(item_dict.get("title"))
         # UKE work_area is usually contact/location-like; do NOT treat as specialty.
         # Keep it as department/unit if department missing, else preserve in raw.
         if not department_or_unit:

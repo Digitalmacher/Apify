@@ -44,7 +44,15 @@ DOWNLOAD_DELAY = 0
 
 
 # Disable cookies (enabled by default)
-#COOKIES_ENABLED = False
+#
+# IMPORTANT: Scrapy's CookiesMiddleware uses tldextract to classify domains.
+# In sandboxed environments (and some CI runners), tldextract may fail when it
+# cannot write its public suffix list cache/lock file outside the workspace,
+# causing crawls to error even for simple GET requests.
+#
+# These directory-style scrapers do not rely on cookie-based sessions, so we
+# disable cookies for stability and reproducibility.
+COOKIES_ENABLED = False
 
 # Disable Telnet Console (enabled by default)
 #TELNETCONSOLE_ENABLED = False
