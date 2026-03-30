@@ -430,8 +430,18 @@ class ApifyPipeline:
             err = None
             try:
                 async def push_all_items():
-                    for item in items_to_push:
-                        await Actor.push_data(item)
+                    # Push in batches to avoid slow per-item API calls.
+                    # This is critical on Apify where the Actor can receive SIGTERM
+                    # during migrations; fewer requests => higher chance to finish.
+                    BATCH_SIZE = 500
+                    total = len(items_to_push)
+                    for i in range(0, total, BATCH_SIZE):
+                        chunk = items_to_push[i : i + BATCH_SIZE]
+                        await Actor.push_data(chunk)
+                        if self._apify_available:
+                            Actor.log.info(
+                                f"ApifyPipeline: Pushed {min(i + BATCH_SIZE, total)}/{total} items"
+                            )
 
                 asyncio.run(push_all_items())
                 if self._apify_available:
