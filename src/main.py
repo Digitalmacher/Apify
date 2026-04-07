@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import sys
+import signal
 from apify import Actor
 from scrapy.crawler import CrawlerRunner
 from scrapy.utils.project import get_project_settings
@@ -13,8 +14,18 @@ from twisted.python.failure import Failure
 @inlineCallbacks
 def run_spiders(spider_names, settings, log_fn=None):
     """Run multiple spiders sequentially. All results are pushed to the same Apify dataset."""
-    runner = CrawlerRunner(settings)
     for i, name in enumerate(spider_names):
+        # Persist scheduler/dupefilter state per spider so Apify migrations (SIGTERM)
+        # can restart the container and continue the crawl instead of losing progress.
+        #
+        # NOTE: Each spider gets its own JOBDIR to avoid cross-spider state collisions.
+        jobdir_root = os.environ.get("SCRAPY_JOBDIR_ROOT") or os.path.join("storage", "scrapy_jobdir")
+        jobdir = os.path.join(jobdir_root, name)
+        spider_settings = settings.copy()
+        spider_settings.set("JOBDIR", jobdir, priority="cmdline")
+        spider_settings.set("SCHEDULER_PERSIST", True, priority="cmdline")
+
+        runner = CrawlerRunner(spider_settings)
         if log_fn:
             log_fn(f"Scraper {i + 1}/{len(spider_names)} ready: starting '{name}'")
         yield runner.crawl(name)
@@ -120,6 +131,29 @@ def main():
         else:
             log.warning("Failed applying CLOSESPIDER_* settings from input: %s", e)
     
+    # Best-effort graceful shutdown on SIGTERM (Apify migrations / preemption).
+    # Scrapy + Twisted will still be interrupted, but this increases the chance
+    # pipelines flush and stats are emitted before the container is stopped.
+    def _handle_sigterm(signum, frame):
+        try:
+            if actor_initialized:
+                Actor.log.warning("Received SIGTERM (likely migration). Attempting graceful shutdown...")
+            else:
+                log.warning("Received SIGTERM. Attempting graceful shutdown...")
+        except Exception:
+            pass
+        try:
+            if reactor.running:
+                reactor.callFromThread(reactor.stop)
+        except Exception:
+            pass
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except Exception:
+        # Some restricted environments may not allow installing signal handlers.
+        pass
+
 
     if actor_initialized:
         Actor.log.info('Starting spider (scheduling crawl)...')

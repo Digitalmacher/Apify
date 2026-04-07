@@ -79,9 +79,21 @@ class KvhhSpider(Spider):
 
     custom_settings = {
         "ROBOTSTXT_OBEY": False,
-        "CONCURRENT_REQUESTS": 128,
-        "CONCURRENT_REQUESTS_PER_DOMAIN": 64,
-        "DOWNLOAD_DELAY": 0,
+        # KVHH is sensitive to bursty traffic; too much parallelism causes
+        # intermittent blocking / partial crawls (large swings in item counts).
+        # Keep throughput high but stable.
+        "CONCURRENT_REQUESTS": 32,
+        "CONCURRENT_REQUESTS_PER_DOMAIN": 16,
+        "DOWNLOAD_DELAY": 0.05,
+        "RANDOMIZE_DOWNLOAD_DELAY": True,
+        "DOWNLOAD_TIMEOUT": 60,
+        "RETRY_ENABLED": True,
+        "RETRY_TIMES": 10,
+        "RETRY_HTTP_CODES": [403, 408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524],
+        "AUTOTHROTTLE_ENABLED": True,
+        "AUTOTHROTTLE_START_DELAY": 0.25,
+        "AUTOTHROTTLE_MAX_DELAY": 30,
+        "AUTOTHROTTLE_TARGET_CONCURRENCY": 2.0,
         "USER_AGENT": (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
@@ -93,6 +105,7 @@ class KvhhSpider(Spider):
             url="https://www.kvhh.net/de/sitemap.xml",
             callback=self.parse_sitemap,
             headers={"Accept": "application/xml, text/xml, */*"},
+            meta={"download_timeout": 120},
         )
 
     def parse_sitemap(self, response):

@@ -5,7 +5,7 @@
   "version": "0.1",
   "description": "Scrapes UKE doctor profiles and Apotheker Kammer Hamburg pharmacy listings. Runs both spiders sequentially in a single run.",
   "defaultRunOptions": {
-    "timeoutSecs": 900
+    "timeoutSecs": 14400
   },
   "storages": {
     "dataset": {
