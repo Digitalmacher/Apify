@@ -1,11 +1,12 @@
 import json
-import asyncio
 import queue
 import threading
+import os
 from itemadapter import ItemAdapter
 from twisted.internet import reactor
 
 from apify import Actor
+from apify_client import ApifyClient
 
 
 def _normalize_for_dataset(obj):
@@ -355,6 +356,8 @@ class ApifyPipeline:
     def __init__(self):
         self.items = []
         self._apify_available = False
+        self._apify_client = None
+        self._apify_dataset = None
         self._push_queue = None
         self._push_worker = None
         self._push_worker_stop = None
@@ -374,6 +377,22 @@ class ApifyPipeline:
         
         self.items = []
 
+        # Prefer pushing through the HTTP API client rather than Actor.push_data().
+        # Actor SDK uses an async event/websocket manager; calling Actor.push_data()
+        # from background threads can race with Actor.exit() and yield shutdown errors.
+        self._apify_client = None
+        self._apify_dataset = None
+        if self._apify_available:
+            token = os.environ.get("APIFY_TOKEN") or os.environ.get("APIFY_API_TOKEN")
+            dataset_id = os.environ.get("ACTOR_DEFAULT_DATASET_ID") or os.environ.get("APIFY_DEFAULT_DATASET_ID")
+            if token and dataset_id:
+                try:
+                    self._apify_client = ApifyClient(token)
+                    self._apify_dataset = self._apify_client.dataset(dataset_id)
+                    Actor.log.info("ApifyPipeline: Using ApifyClient HTTP dataset push (dataset=%s)", dataset_id)
+                except Exception as e:
+                    Actor.log.warning("ApifyPipeline: Failed to init ApifyClient; will fall back. Error: %r", e)
+
         # On Apify, push incrementally during the crawl so platform migrations (SIGTERM)
         # don't interrupt a single large final push in close_spider.
         if self._apify_available:
@@ -384,45 +403,50 @@ class ApifyPipeline:
             def _worker():
                 err = None
                 try:
-                    async def _run():
-                        batch = []
-                        last_flush = asyncio.get_event_loop().time()
+                    import time
 
-                        async def _flush():
-                            nonlocal batch, last_flush
-                            if not batch:
-                                return
+                    batch = []
+                    last_flush = time.monotonic()
+
+                    def _push_chunk(chunk):
+                        if not chunk:
+                            return
+                        if self._apify_dataset is not None:
+                            self._apify_dataset.push_items(chunk)
+                        else:
+                            # Fallback: Actor.push_data is async; avoid calling it from the worker thread.
+                            # If we can't create the HTTP client, buffer and push in close_spider instead.
+                            self.items.extend(chunk)
+                            return
+                        Actor.log.info("ApifyPipeline: Pushed %d items (streaming)", len(chunk))
+
+                    while True:
+                        if self._push_worker_stop.is_set() and self._push_queue.empty():
+                            break
+
+                        try:
+                            rec = self._push_queue.get(timeout=0.25)
+                            batch.append(rec)
+                            # Mark done immediately; the worker owns the batch.
+                            self._push_queue.task_done()
+                        except queue.Empty:
+                            rec = None
+
+                        now = time.monotonic()
+                        if len(batch) >= self._push_batch_size:
                             chunk = batch
                             batch = []
-                            await Actor.push_data(chunk)
-                            Actor.log.info(
-                                "ApifyPipeline: Pushed %d items (streaming)",
-                                len(chunk),
-                            )
-                            last_flush = asyncio.get_event_loop().time()
+                            _push_chunk(chunk)
+                            last_flush = now
+                        elif batch and (now - last_flush) >= self._push_flush_interval_s:
+                            chunk = batch
+                            batch = []
+                            _push_chunk(chunk)
+                            last_flush = now
 
-                        while True:
-                            if self._push_worker_stop.is_set() and self._push_queue.empty():
-                                break
-
-                            try:
-                                rec = self._push_queue.get(timeout=0.25)
-                                batch.append(rec)
-                                # Mark done immediately; the worker owns the batch.
-                                self._push_queue.task_done()
-                            except queue.Empty:
-                                rec = None
-
-                            now = asyncio.get_event_loop().time()
-                            if len(batch) >= self._push_batch_size:
-                                await _flush()
-                            elif batch and (now - last_flush) >= self._push_flush_interval_s:
-                                await _flush()
-
-                        # Final flush on shutdown
-                        await _flush()
-
-                    asyncio.run(_run())
+                    # Final flush on shutdown
+                    if batch:
+                        _push_chunk(batch)
                 except Exception as e:
                     err = e
                     try:
@@ -509,22 +533,30 @@ class ApifyPipeline:
                 items_to_push = list(self.items)
                 self.items = []
                 if items_to_push:
-                    async def push_overflow():
-                        BATCH_SIZE = self._push_batch_size
-                        total = len(items_to_push)
-                        for i in range(0, total, BATCH_SIZE):
-                            chunk = items_to_push[i : i + BATCH_SIZE]
-                            await Actor.push_data(chunk)
-                            Actor.log.info(
-                                "ApifyPipeline: Pushed %d/%d overflow items",
-                                min(i + BATCH_SIZE, total),
-                                total,
-                            )
-                    asyncio.run(push_overflow())
+                    if self._apify_dataset is None:
+                        raise RuntimeError(
+                            "ApifyPipeline: Cannot push items (missing APIFY_TOKEN/APIFY_API_TOKEN "
+                            "or ACTOR_DEFAULT_DATASET_ID/APIFY_DEFAULT_DATASET_ID)"
+                        )
+                    BATCH_SIZE = self._push_batch_size
+                    total = len(items_to_push)
+                    for i in range(0, total, BATCH_SIZE):
+                        chunk = items_to_push[i : i + BATCH_SIZE]
+                        self._apify_dataset.push_items(chunk)
+                        Actor.log.info(
+                            "ApifyPipeline: Pushed %d/%d overflow items",
+                            min(i + BATCH_SIZE, total),
+                            total,
+                        )
 
                 # Wait for streaming worker to finish flushing.
                 if self._push_worker is not None:
                     self._push_worker.join(timeout=600)
+                    if self._push_worker.is_alive():
+                        raise TimeoutError(
+                            "ApifyPipeline: Streaming push worker did not stop within 600s; "
+                            "aborting shutdown to avoid partial pushes during Actor exit."
+                        )
 
                 # Surface any worker errors.
                 if self._push_worker_err:
