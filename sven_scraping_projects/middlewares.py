@@ -3,7 +3,10 @@
 # See documentation in:
 # https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
+from __future__ import annotations
+
 from scrapy import signals
+from scrapy.exceptions import IgnoreRequest
 
 # useful for handling different item types with a single interface
 from itemadapter import ItemAdapter
@@ -98,3 +101,65 @@ class SvenScrapingProjectsDownloaderMiddleware:
 
     def spider_opened(self, spider):
         spider.logger.info("Spider opened: %s" % spider.name)
+
+
+class HttpStatusLoggingMiddleware:
+    """
+    Downloader middleware to log non-200 responses and record status counters.
+    Does NOT block responses (blocking is handled in the spider middleware so
+    retries + other downloader middlewares still run normally).
+    """
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        s = cls()
+        s.stats = crawler.stats
+        return s
+
+    def process_response(self, request, response, spider):
+        try:
+            status = int(getattr(response, "status", 0) or 0)
+        except Exception:
+            status = 0
+
+        # Always track counts, even if we later skip parsing.
+        if status:
+            self.stats.inc_value(f"http_status_count/{status}", spider=spider)
+            if status == 404:
+                self.stats.inc_value("http_status_count/404", spider=spider)
+
+        if status and status != 200:
+            # Prefer warning over error: many sites use 301/302; 4xx/5xx are the real problem.
+            level = "warning" if status < 500 else "error"
+            msg = (
+                f"Non-200 response: status={status} url={response.url} "
+                f"referer={request.headers.get('Referer', b'').decode(errors='ignore')!r}"
+            )
+            getattr(spider.logger, level)(msg)
+        return response
+
+
+class Non200ResponseGuardSpiderMiddleware:
+    """
+    Spider middleware that prevents callbacks from parsing non-200 responses.
+    This avoids silently yielding empty/partial items and makes scheduled runs
+    deterministic.
+
+    Spiders can override via `allow_parse_httpstatus_list = {codes}`.
+    """
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls()
+
+    def process_spider_input(self, response, spider):
+        status = getattr(response, "status", 200)
+        if status == 200:
+            return None
+
+        allow = getattr(spider, "allow_parse_httpstatus_list", set())
+        if status in allow:
+            return None
+
+        # Skip parsing: treat as a download-level failure.
+        raise IgnoreRequest(f"Skipping parse for status={status} url={response.url}")

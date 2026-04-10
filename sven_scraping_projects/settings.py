@@ -71,9 +71,22 @@ COOKIES_ENABLED = False
 
 # Enable or disable downloader middlewares
 # See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
-#DOWNLOADER_MIDDLEWARES = {
-#    "sven_scraping_projects.middlewares.SvenScrapingProjectsDownloaderMiddleware": 543,
-#}
+DOWNLOADER_MIDDLEWARES = {
+    # Log non-200 responses globally; keep default middlewares in place.
+    "sven_scraping_projects.middlewares.HttpStatusLoggingMiddleware": 550,
+}
+
+# Enable or disable spider middlewares
+# See https://docs.scrapy.org/en/latest/topics/spider-middleware.html
+SPIDER_MIDDLEWARES = {
+    # Prevent parsing of non-200 responses across all spiders (unless explicitly allowed).
+    "sven_scraping_projects.middlewares.Non200ResponseGuardSpiderMiddleware": 543,
+}
+
+# Extensions (run-level validation and summaries)
+EXTENSIONS = {
+    "sven_scraping_projects.extensions.RunValidationExtension": 500,
+}
 
 # Enable or disable extensions
 # See https://docs.scrapy.org/en/latest/topics/extensions.html
@@ -110,3 +123,14 @@ ITEM_PIPELINES = {
 
 # Set settings whose default value is deprecated to a future-proof value
 FEED_EXPORT_ENCODING = "utf-8"
+
+# Conservative defaults for retries/timeouts across spiders. Individual spiders may override.
+RETRY_ENABLED = True
+RETRY_TIMES = 5
+RETRY_HTTP_CODES = [408, 429, 500, 502, 503, 504, 522, 524]
+DOWNLOAD_TIMEOUT = 60
+
+# Validation thresholds (used by RunValidationExtension). Tune via env in scheduled runs if needed.
+RUN_VALIDATION_MIN_RESPONSES = 200
+RUN_VALIDATION_MAX_404_RATE = 0.05
+RUN_VALIDATION_MIN_ITEMS_PER_100_RESPONSES = 5

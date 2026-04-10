@@ -1,14 +1,13 @@
-import json
 from scrapy import Spider
 from scrapy.http import Request
-from scrapy.shell import inspect_response
-from scrapy.utils.response import open_in_browser
+from scrapy.spidermiddlewares.httperror import HttpError
+from twisted.internet.error import DNSLookupError, TimeoutError, TCPTimedOutError
+from twisted.web._newclient import ResponseNeverReceived
 
 
 class ApothekerkammerHamburgSpider(Spider):
     name = "apothekerkammer-hamburg"
     allowed_domains = ["portal.apothekerkammer-hamburg.de"]
-    handle_httpstatus_list = [404]
 
     custom_settings = {
         "ROBOTSTXT_OBEY": False,
@@ -41,6 +40,7 @@ class ApothekerkammerHamburgSpider(Spider):
             url="https://portal.apothekerkammer-hamburg.de/apothekenfinder/",
             headers=self.page_headers,
             callback=self.parse,
+            errback=self.errback_http,
         )
 
     # ------------------------
@@ -64,9 +64,6 @@ class ApothekerkammerHamburgSpider(Spider):
     # ------------------------
 
     def parse(self, response):
-        # open_in_browser(response)
-        # inspect_response(response, self)
-
         listings = response.xpath(
             '//div[@class="container mt-3"]'
             '//div[@class="searchhit-icon searchhit-icon-site"]/parent::div'
@@ -105,7 +102,8 @@ class ApothekerkammerHamburgSpider(Spider):
                         "/parent::div/following-sibling::div/span/a/@href"
                     )
                 ),
-                "url": self._text(listing.xpath(".//h3/a/@href")),
+                # Normalize to absolute for stability + downstream matching.
+                "url": response.urljoin(self._text(listing.xpath(".//h3/a/@href"))),
             }
 
         # Pagination
@@ -115,4 +113,29 @@ class ApothekerkammerHamburgSpider(Spider):
                 next_page,
                 headers=self.page_headers,
                 callback=self.parse,
+                errback=self.errback_http,
             )
+
+    def errback_http(self, failure):
+        """
+        Centralized logging for failed/blocked requests.
+        This makes scheduled runs debuggable when the site changes or blocks.
+        """
+        request = getattr(failure, "request", None)
+        url = getattr(request, "url", None) if request is not None else None
+
+        if failure.check(HttpError):
+            response = failure.value.response
+            self.logger.warning("HTTP error: status=%s url=%s", response.status, response.url)
+            return
+        if failure.check(DNSLookupError):
+            self.logger.error("DNSLookupError on %s", url)
+            return
+        if failure.check(TimeoutError, TCPTimedOutError):
+            self.logger.warning("Timeout on %s", url)
+            return
+        if failure.check(ResponseNeverReceived):
+            self.logger.warning("ResponseNeverReceived on %s", url)
+            return
+
+        self.logger.error("Request failed: %r url=%s", failure, url)

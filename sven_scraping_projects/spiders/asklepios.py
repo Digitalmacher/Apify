@@ -111,31 +111,41 @@ class AsklepiosSpider(Spider):
             self.logger.warning("Asklepios sitemap: no <loc> found for %s", response.url)
             return
 
-        profile_urls = []
-        for url in locs:
-            # Primary pattern observed historically
-            if "/profil/" in url:
-                profile_urls.append(url)
-                continue
-            # Fallback patterns (site may change language/paths)
-            if "/profile/" in url or "/arzt" in url or "/aerzte" in url:
-                profile_urls.append(url)
+        # Track coverage for validation.
+        self.sitemap_locs_total = int(getattr(self, "sitemap_locs_total", 0) or 0) + len(locs)
 
+        scheduled = 0
+        for url in locs:
+            u = (url or "").strip()
+            if not u:
+                continue
+            # Avoid scheduling obvious non-HTML assets.
+            lower = u.lower()
+            if any(lower.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".pdf", ".xml", ".gz")):
+                continue
+            scheduled += 1
+            yield Request(
+                u,
+                headers=self.profile_headers,
+                callback=self.parse_profile,
+                dont_filter=True,
+            )
+
+        self.sitemap_locs_scheduled = int(getattr(self, "sitemap_locs_scheduled", 0) or 0) + scheduled
         self.logger.info(
-            "Asklepios sitemap: %d locs, scheduled %d profile URLs (%s)",
+            "Asklepios sitemap: %d locs, scheduled %d URLs (%s)",
             len(locs),
-            len(profile_urls),
+            scheduled,
             response.url,
         )
 
-        for url in profile_urls:
-            yield Request(
-                url,
-                headers=self.profile_headers,
-                callback=self.parse_profile,
-            )
-
     def parse_profile(self, response):
+        # Many sitemap URLs are not physician profiles. Only parse pages that look like profiles.
+        h1 = self._text(response.xpath("//h1/text()"))
+        if not h1:
+            self.logger.debug("Skipping non-profile page (no h1): %s", response.url)
+            return
+
         clinics = []
         clinic_nodes = response.xpath('//article[@data-test-id="facility-teaser"]')
         for clinic in clinic_nodes:
@@ -166,7 +176,7 @@ class AsklepiosSpider(Spider):
 
         yield {
             "url": response.url,
-            "name": self._text(response.xpath("//h1/text()")),
+            "name": h1,
             "position": self._text(
                 response.xpath('//span[text()="Position"]/following-sibling::span/text()')
             ),

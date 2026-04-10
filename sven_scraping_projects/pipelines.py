@@ -364,6 +364,8 @@ class ApifyPipeline:
         self._push_worker_err = None
         self._push_batch_size = 500
         self._push_flush_interval_s = 2.0
+        self._seen_keys = set()
+        self._duplicate_key_count = 0
     
     def open_spider(self, spider):
         # Check if Apify Actor is available
@@ -478,6 +480,19 @@ class ApifyPipeline:
         with_aliases = _add_legacy_dataset_aliases(normalized)
         rec = _stringify_apify_dataset_record(with_aliases)
 
+        # Best-effort duplicate detection (do not drop records; only track + log).
+        # Key selection: prefer canonical source_url (also duplicated into legacy url).
+        key = (rec.get("source_url") or rec.get("url") or "").strip()
+        if key:
+            if key in self._seen_keys:
+                self._duplicate_key_count += 1
+                try:
+                    spider.crawler.stats.inc_value("pipeline/duplicate_key_count", spider=spider)
+                except Exception:
+                    pass
+            else:
+                self._seen_keys.add(key)
+
         if self._apify_available and self._push_queue is not None:
             # Best-effort streaming push. If the queue is full (temporary API slowdown),
             # fall back to in-memory buffer so we don't drop data.
@@ -495,6 +510,17 @@ class ApifyPipeline:
         # reactor. This ensures crawls complete cleanly and the next spider can start.
         from twisted.internet.defer import Deferred
         from twisted.python.failure import Failure
+
+        # Surface run-level validation failures as a hard error so scheduled runs fail loudly.
+        try:
+            if spider.crawler.stats.get_value("validation_failed"):
+                reason = spider.crawler.stats.get_value("validation_failed_reason") or "validation_failed"
+                d = Deferred()
+                d.errback(Failure(RuntimeError(str(reason))))
+                return d
+        except Exception:
+            # If stats are unavailable, continue with push rather than crash.
+            pass
 
         d = Deferred()
         done_called = []
