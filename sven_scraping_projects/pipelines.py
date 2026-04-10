@@ -58,6 +58,164 @@ def _first_non_empty(*values):
     return ""
 
 
+def _collapse_ws(value: str) -> str:
+    return " ".join((value or "").split())
+
+
+# Longest match first — German academic / professional prefixes often stacked
+# (e.g. "Prof. Dr. med.").
+_ACADEMIC_TITLE_PREFIXES: tuple[str, ...] = (
+    "Prof. Dr. med. dent.",
+    "Prof. Dr. med.",
+    "Prof. Dr.",
+    "PD Dr. med. dent.",
+    "PD Dr. med.",
+    "PD Dr.",
+    "Univ.-Prof. Dr. med.",
+    "Univ.-Prof. Dr.",
+    "apl. Prof. Dr. med.",
+    "apl. Prof. Dr.",
+    "Dr. med. dent.",
+    "Dr. med.",
+    "Dr.",
+    "Dipl.-Psych.",
+    "Med. pract.",
+)
+
+
+def _strip_leading_frau_herr(s: str) -> str:
+    s = _collapse_ws(s)
+    low = s.lower()
+    if low.startswith("frau "):
+        return _collapse_ws(s[5:])
+    if low.startswith("herr "):
+        return _collapse_ws(s[5:])
+    return s
+
+
+def _strip_one_academic_title_left(s: str) -> tuple[str | None, str]:
+    """If s starts with a known title prefix, return (title, remainder). Else (None, s)."""
+    s = _collapse_ws(s)
+    if not s:
+        return None, s
+    for prefix in _ACADEMIC_TITLE_PREFIXES:
+        if not s.startswith(prefix):
+            continue
+        if len(s) == len(prefix):
+            return prefix, ""
+        nxt = s[len(prefix) : len(prefix) + 1]
+        if nxt.isspace() or nxt in ",;":
+            rest = _collapse_ws(s[len(prefix) :].lstrip(" ,;"))
+            return prefix, rest
+    return None, s
+
+
+def _extract_academic_titles_left(s: str) -> tuple[list[str], str]:
+    titles: list[str] = []
+    rest = _collapse_ws(s)
+    while rest:
+        t, rest = _strip_one_academic_title_left(rest)
+        if t is None:
+            break
+        titles.append(t)
+    return titles, rest
+
+
+def _dedupe_titles_preserve_order(titles: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in titles:
+        x = (x or "").strip()
+        if not x:
+            continue
+        key = x.lower().rstrip(".")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(x)
+    return out
+
+
+def _merge_into_name_title(existing_name_title: str, extracted: list[str]) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for x in _split_csvish(existing_name_title) + extracted:
+        x = (x or "").strip()
+        if not x:
+            continue
+        key = x.lower().rstrip(".")
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(x)
+    return ", ".join(parts)
+
+
+def _prepend_titles_to_job_title(titles_joined: str, job_title: str) -> str:
+    """
+    Put academic titles into the visible Position/job_title column for Apify views,
+    without duplicating if job_title already contains them.
+    """
+    tj = (titles_joined or "").strip()
+    jt = (job_title or "").strip()
+    if not tj:
+        return jt
+    if not jt:
+        return tj
+    if tj.lower() in jt.lower():
+        return jt
+    return f"{tj}, {jt}"
+
+
+def _normalize_academic_titles_for_person(
+    display_name: str,
+    first_name: str,
+    last_name: str,
+    name_title: str,
+    job_title: str,
+) -> tuple[str, str, str, str, str]:
+    """
+    Remove stacked academic prefixes from person name fields; merge into name_title;
+    prepend the same string to job_title for table views (Position column).
+    """
+    all_titles: list[str] = []
+
+    dn = _collapse_ws(display_name)
+    if dn:
+        dn = _strip_leading_frau_herr(dn)
+        ts, dn_rest = _extract_academic_titles_left(dn)
+        all_titles.extend(ts)
+        dn_clean = dn_rest
+    else:
+        dn_clean = ""
+
+    fn = _collapse_ws(first_name)
+    if fn:
+        ts, fn = _extract_academic_titles_left(fn)
+        all_titles.extend(ts)
+
+    ln = _collapse_ws(last_name)
+    if ln:
+        ts, ln = _extract_academic_titles_left(ln)
+        all_titles.extend(ts)
+
+    all_titles = _dedupe_titles_preserve_order(all_titles)
+    if not all_titles and not (name_title or "").strip():
+        return display_name, first_name, last_name, name_title, job_title
+
+    name_title_out = _merge_into_name_title(name_title, all_titles)
+
+    if fn or ln:
+        display_out = " ".join(p for p in (fn, ln) if p)
+    elif dn_clean:
+        display_out = dn_clean
+    else:
+        display_out = _collapse_ws(display_name)
+
+    job_title_out = _prepend_titles_to_job_title(name_title_out, job_title)
+    return display_out, fn, ln, name_title_out, job_title_out
+
+
 def _canonicalize_item(item_dict):
     """
     Map spider-specific keys into a canonical schema.
@@ -213,6 +371,17 @@ def _canonicalize_item(item_dict):
             entity_type = "organization"
         else:
             entity_type = "person"
+
+    # Strip Dr./Prof./… from person names; keep titles in name_title and surface
+    # them in job_title for Apify table views (Position column).
+    if entity_type == "person":
+        display_name, first_name, last_name, name_title, job_title = _normalize_academic_titles_for_person(
+            display_name,
+            first_name,
+            last_name,
+            name_title,
+            job_title,
+        )
 
     canonical = {
         # Provenance

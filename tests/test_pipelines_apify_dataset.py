@@ -80,6 +80,32 @@ class TestApifyDatasetRecord(unittest.TestCase):
         parsed = json.loads(raw)
         self.assertIsInstance(parsed, dict)
 
+    def test_academic_titles_removed_from_name_and_added_to_job_title(self):
+        rec = _full_pipeline_item(
+            {
+                "source": "kvhh",
+                "url": "https://kvhh.net/x",
+                "name": "Dr. med. Anna Schmidt",
+                "position": "Allgemeinmedizin",
+            }
+        )
+        self.assertEqual(rec.get("display_name"), "Anna Schmidt")
+        self.assertIn("Dr. med.", rec.get("name_title", ""))
+        self.assertIn("Dr. med.", rec.get("job_title", ""))
+        self.assertIn("Allgemeinmedizin", rec.get("job_title", ""))
+        self.assertNotIn("Dr.", rec.get("name", ""))
+
+    def test_organization_name_not_treated_as_person_titles(self):
+        rec = _full_pipeline_item(
+            {
+                "source": "apothekerkammer-hamburg",
+                "entity_type": "organization",
+                "name": "Apotheke am Markt 1",
+                "url": "https://portal.example/a",
+            }
+        )
+        self.assertEqual(rec.get("display_name"), "Apotheke am Markt 1")
+
     def test_batching_math(self):
         # Not calling Apify; just ensuring expected number of batches.
         total = 1201
