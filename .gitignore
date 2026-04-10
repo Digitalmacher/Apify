@@ -11,3 +11,5 @@ build/
 # Local / env
 .env
 *.log
+.venv/
+.idea/

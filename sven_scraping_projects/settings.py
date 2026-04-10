@@ -83,9 +83,10 @@ SPIDER_MIDDLEWARES = {
     "sven_scraping_projects.middlewares.Non200ResponseGuardSpiderMiddleware": 543,
 }
 
-# Extensions (run-level validation and summaries)
+# Extensions (run-level validation and summaries; class lives in middlewares.py
+# so Docker images always include it with the rest of the package)
 EXTENSIONS = {
-    "sven_scraping_projects.extensions.RunValidationExtension": 500,
+    "sven_scraping_projects.middlewares.RunValidationExtension": 500,
 }
 
 # Enable or disable extensions

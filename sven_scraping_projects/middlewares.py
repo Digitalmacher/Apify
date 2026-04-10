@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from scrapy import signals
 from scrapy.exceptions import IgnoreRequest
 
@@ -163,3 +165,119 @@ class Non200ResponseGuardSpiderMiddleware:
 
         # Skip parsing: treat as a download-level failure.
         raise IgnoreRequest(f"Skipping parse for status={status} url={response.url}")
+
+
+@dataclass
+class _SpiderRunCounters:
+    responses: int = 0
+    items: int = 0
+    non_200: int = 0
+    http_404: int = 0
+    sitemap_locs_total: int = 0
+    sitemap_locs_scheduled: int = 0
+
+
+class RunValidationExtension:
+    """
+    Run-level validation + summaries.
+
+    Kept in middlewares.py so Apify Docker builds always ship it alongside
+    settings that reference EXTENSIONS (avoids ModuleNotFoundError if extensions.py
+    is missing from the image).
+    """
+
+    def __init__(self, crawler):
+        self.crawler = crawler
+        self.stats = crawler.stats
+        self.settings = crawler.settings
+        self._counters = _SpiderRunCounters()
+
+        self._min_responses = int(self.settings.getint("RUN_VALIDATION_MIN_RESPONSES", 200))
+        self._max_404_rate = float(self.settings.getfloat("RUN_VALIDATION_MAX_404_RATE", 0.05))
+        self._min_items_per_100 = float(
+            self.settings.getfloat("RUN_VALIDATION_MIN_ITEMS_PER_100_RESPONSES", 5)
+        )
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        ext = cls(crawler)
+        crawler.signals.connect(ext.response_received, signal=signals.response_received)
+        crawler.signals.connect(ext.item_scraped, signal=signals.item_scraped)
+        crawler.signals.connect(ext.spider_opened, signal=signals.spider_opened)
+        crawler.signals.connect(ext.spider_closed, signal=signals.spider_closed)
+        return ext
+
+    def spider_opened(self, spider):
+        self.stats.set_value("run_validation/enabled", True, spider=spider)
+
+    def response_received(self, response, request, spider):
+        self._counters.responses += 1
+        status = getattr(response, "status", 200)
+        if status != 200:
+            self._counters.non_200 += 1
+        if status == 404:
+            self._counters.http_404 += 1
+
+    def item_scraped(self, item, response, spider):
+        self._counters.items += 1
+
+    def _read_sitemap_counters_from_spider(self, spider):
+        self._counters.sitemap_locs_total = int(getattr(spider, "sitemap_locs_total", 0) or 0)
+        self._counters.sitemap_locs_scheduled = int(
+            getattr(spider, "sitemap_locs_scheduled", 0) or 0
+        )
+
+    def spider_closed(self, spider, reason):
+        self._read_sitemap_counters_from_spider(spider)
+
+        responses = max(self._counters.responses, 0)
+        items = max(self._counters.items, 0)
+        http_404 = max(self._counters.http_404, 0)
+
+        rate_404 = (http_404 / responses) if responses else 0.0
+        items_per_100 = (items / responses * 100.0) if responses else 0.0
+        sitemap_cov = None
+        if self._counters.sitemap_locs_total:
+            sitemap_cov = self._counters.sitemap_locs_scheduled / self._counters.sitemap_locs_total
+
+        self.stats.set_value("run_validation/responses", responses, spider=spider)
+        self.stats.set_value("run_validation/items", items, spider=spider)
+        self.stats.set_value("run_validation/http_404", http_404, spider=spider)
+        self.stats.set_value("run_validation/http_404_rate", rate_404, spider=spider)
+        self.stats.set_value("run_validation/items_per_100_responses", items_per_100, spider=spider)
+        if sitemap_cov is not None:
+            self.stats.set_value("run_validation/sitemap_coverage", sitemap_cov, spider=spider)
+
+        spider.logger.info(
+            "Run summary: responses=%d items=%d non_200=%d 404=%d (rate=%.2f%%) items/100=%.2f%s reason=%s",
+            responses,
+            items,
+            self._counters.non_200,
+            http_404,
+            rate_404 * 100.0,
+            items_per_100,
+            (
+                f" sitemap_coverage={sitemap_cov * 100.0:.2f}%"
+                if sitemap_cov is not None
+                else ""
+            ),
+            reason,
+        )
+
+        failures = []
+        if responses >= self._min_responses:
+            if rate_404 > self._max_404_rate:
+                failures.append(f"404_rate={rate_404:.3f} > max={self._max_404_rate:.3f}")
+            if items_per_100 < self._min_items_per_100:
+                failures.append(
+                    f"items_per_100_responses={items_per_100:.2f} < min={self._min_items_per_100:.2f}"
+                )
+        if sitemap_cov is not None and self._counters.sitemap_locs_total >= 100:
+            if sitemap_cov < 0.5:
+                failures.append(f"sitemap_coverage={sitemap_cov:.3f} < min=0.500")
+
+        if failures:
+            msg = "Run validation failed: " + "; ".join(failures)
+            self.stats.set_value("validation_failed", True, spider=spider)
+            self.stats.set_value("validation_failed_reason", msg, spider=spider)
+            spider.logger.error(msg)
