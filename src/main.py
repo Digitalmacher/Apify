@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import sys
-from apify import Actor
+from apify import Actor, Configuration
 from scrapy.crawler import CrawlerRunner
 from scrapy.utils.project import get_project_settings
 from twisted.internet import reactor
@@ -39,9 +39,13 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    # We do not rely on platform events (MIGRATING/PERSIST_STATE listeners).
+    # Explicitly disable the events websocket to avoid noisy shutdown errors.
+    actor = Actor(configuration=Configuration(actor_events_ws_url=None))
+
     async def init_and_get_input():
-        await Actor.init()
-        return await Actor.get_input() or {}
+        await actor.init()
+        return await actor.get_input() or {}
 
     input_data = {}
     actor_initialized = False
@@ -52,7 +56,7 @@ def main():
         log.exception("Apify Actor.init() / Actor.get_input() failed; falling back to env. Error: %s", e)
 
     if actor_initialized:
-        Actor.log.info('Starting Scrapy spider on Apify...')
+        actor.log.info('Starting Scrapy spider on Apify...')
     else:
         log.info('Starting Scrapy spider (Apify SDK not initialized; using fallbacks)...')
 
@@ -74,12 +78,12 @@ def main():
         spider_names = default_spiders
 
     if actor_initialized:
-        Actor.log.info(f'Running spiders: {spider_names}')
+        actor.log.info(f'Running spiders: {spider_names}')
     else:
         log.info('Running spiders: %s', spider_names)
     
     if actor_initialized:
-        Actor.log.info('Loading Scrapy project settings...')
+        actor.log.info('Loading Scrapy project settings...')
     else:
         log.info('Loading Scrapy project settings...')
     settings = get_project_settings()
@@ -89,7 +93,7 @@ def main():
         if isinstance(max_items, int) and max_items > 0:
             settings.set("CLOSESPIDER_ITEMCOUNT", max_items, priority="cmdline")
             if actor_initialized:
-                Actor.log.info(f"Configured CLOSESPIDER_ITEMCOUNT={max_items}")
+                actor.log.info(f"Configured CLOSESPIDER_ITEMCOUNT={max_items}")
             else:
                 log.info("Configured CLOSESPIDER_ITEMCOUNT=%s", max_items)
 
@@ -97,7 +101,7 @@ def main():
         if isinstance(max_pages, int) and max_pages > 0:
             settings.set("CLOSESPIDER_PAGECOUNT", max_pages, priority="cmdline")
             if actor_initialized:
-                Actor.log.info(f"Configured CLOSESPIDER_PAGECOUNT={max_pages}")
+                actor.log.info(f"Configured CLOSESPIDER_PAGECOUNT={max_pages}")
             else:
                 log.info("Configured CLOSESPIDER_PAGECOUNT=%s", max_pages)
 
@@ -105,30 +109,30 @@ def main():
         if isinstance(close_spider_timeout_secs, (int, float)) and close_spider_timeout_secs > 0:
             settings.set("CLOSESPIDER_TIMEOUT", close_spider_timeout_secs, priority="cmdline")
             if actor_initialized:
-                Actor.log.info(f"Configured CLOSESPIDER_TIMEOUT={close_spider_timeout_secs}s")
+                actor.log.info(f"Configured CLOSESPIDER_TIMEOUT={close_spider_timeout_secs}s")
             else:
                 log.info("Configured CLOSESPIDER_TIMEOUT=%ss", close_spider_timeout_secs)
         elif actor_initialized:
-            Actor.log.info(
+            actor.log.info(
                 "No close_spider_timeout_secs set - spider will run until completion. "
                 "To scrape all results, increase the timeout in Apify Run options "
                 "(default is 300s; increase to 600s+ for large datasets)."
             )
     except Exception as e:
         if actor_initialized:
-            Actor.log.warning(f"Failed applying CLOSESPIDER_* settings from input: {e}")
+            actor.log.warning(f"Failed applying CLOSESPIDER_* settings from input: {e}")
         else:
             log.warning("Failed applying CLOSESPIDER_* settings from input: %s", e)
     
 
     if actor_initialized:
-        Actor.log.info('Starting spider (scheduling crawl)...')
+        actor.log.info('Starting spider (scheduling crawl)...')
     else:
         log.info('Starting spider (scheduling crawl)...')
 
     def _log(msg):
         if actor_initialized:
-            Actor.log.info(msg)
+            actor.log.info(msg)
         else:
             log.info(msg)
 
@@ -137,7 +141,7 @@ def main():
     def _on_error(f: Failure):
         tb = f.getTraceback()
         if actor_initialized:
-            Actor.log.error(f"Spider crashed:\n{tb}")
+            actor.log.error(f"Spider crashed:\n{tb}")
         else:
             log.error("Spider crashed:\n%s", tb)
         try:
@@ -150,18 +154,18 @@ def main():
     d.addErrback(_on_error)
 
     if actor_initialized:
-        Actor.log.info('Running Twisted reactor...')
+        actor.log.info('Running Twisted reactor...')
     else:
         log.info('Running Twisted reactor...')
     reactor.run()
     
     if actor_initialized:
-        Actor.log.info(f'Spiders {spider_names} completed successfully')
+        actor.log.info(f'Spiders {spider_names} completed successfully')
     else:
         log.info('Spiders %s completed successfully', spider_names)
     try:
         if actor_initialized:
-            loop.run_until_complete(Actor.exit())
+            loop.run_until_complete(actor.exit())
     except Exception as e:
         log.warning('Could not shut down Apify Actor cleanly: %s', e)
     finally:
