@@ -8,6 +8,8 @@
 from scrapy import Spider
 from scrapy.http import Request
 
+from sven_scraping_projects.utils.name_parsing import parse_person_name
+
 
 class AsklepiosSpider(Spider):
     name = "asklepios"
@@ -87,6 +89,9 @@ class AsklepiosSpider(Spider):
                 )
 
     def parse_profile(self, response):
+        name_raw = self._text(response.xpath("//h1/text()"))
+        parsed_name = parse_person_name(name_raw)
+
         clinics = []
         clinic_nodes = response.xpath('//article[@data-test-id="facility-teaser"]')
         for clinic in clinic_nodes:
@@ -117,7 +122,10 @@ class AsklepiosSpider(Spider):
 
         yield {
             "url": response.url,
-            "name": self._text(response.xpath("//h1/text()")),
+            "title": parsed_name["title"],
+            "first_name": parsed_name["first_name"],
+            "last_name": parsed_name["last_name"],
+            "name": parsed_name["name"] or name_raw,
             "position": self._text(
                 response.xpath('//span[text()="Position"]/following-sibling::span/text()')
             ),

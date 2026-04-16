@@ -4,6 +4,8 @@ from scrapy.http import Request
 from scrapy.shell import inspect_response
 from scrapy.utils.response import open_in_browser
 
+from sven_scraping_projects.utils.name_parsing import parse_person_name
+
 
 def extract_text(response, xpath):
     """
@@ -126,11 +128,18 @@ class UkeSpider(Spider):
         # open_in_browser(response)
         # inspect_response(response, self)
 
+        name_raw = extract_text(response, '//div[@class="name"]/text()')
+        parsed_name = parse_person_name(name_raw)
+
         # Build structured item from profile page
         item = {
-            "name": extract_text(response, '//div[@class="name"]/text()'),
+            "title": parsed_name["title"],
+            "first_name": parsed_name["first_name"],
+            "last_name": parsed_name["last_name"],
+            "name": parsed_name["name"] or name_raw,
 
-            "title": extract_text(response, '//div[@class="title"]/text()'),
+            # UKE page "title" is a job/position label (not academic title)
+            "job_title": extract_text(response, '//div[@class="title"]/text()'),
 
             "department": extract_text(response, '//div[@class="department"]/text()'),
 
