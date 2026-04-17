@@ -3,6 +3,7 @@ import json
 import queue
 import threading
 import os
+import concurrent.futures
 from itemadapter import ItemAdapter
 from twisted.internet import reactor
 
@@ -536,12 +537,18 @@ class ApifyPipeline:
         self._push_flush_interval_s = 2.0
         self._seen_keys = set()
         self._duplicate_key_count = 0
+        self._actor_loop = None
     
     def open_spider(self, spider):
         # Check if Apify Actor is available
         try:
             self._apify_available = True
             Actor.log.info(f'ApifyPipeline: Spider {spider.name} opened')
+            try:
+                # Provided by src/main.py to ensure all Apify SDK calls use one shared asyncio loop.
+                self._actor_loop = spider.crawler.settings.get("APIFY_ACTOR_LOOP")
+            except Exception:
+                self._actor_loop = None
         except Exception:
             self._apify_available = False
             import logging
@@ -598,7 +605,16 @@ class ApifyPipeline:
                         try:
                             res = push_data(chunk)
                             if asyncio.iscoroutine(res):
-                                asyncio.run(res)
+                                # Run Actor SDK async call on the shared actor loop to avoid
+                                # spawning a separate event loop during shutdown.
+                                if self._actor_loop is not None:
+                                    fut: concurrent.futures.Future = asyncio.run_coroutine_threadsafe(res, self._actor_loop)
+                                    fut.result(timeout=120)
+                                else:
+                                    # If we don't have the loop (local run / unusual init), buffer instead of risking
+                                    # new event loop creation that could interfere with Actor.exit().
+                                    self.items.extend(chunk)
+                                    return
                             Actor.log.info(
                                 "ApifyPipeline: Pushed %d items (streaming, Actor.push_data)",
                                 len(chunk),
@@ -773,7 +789,14 @@ class ApifyPipeline:
                             chunk = items_to_push[i : i + BATCH_SIZE]
                             res = push_data(chunk)
                             if asyncio.iscoroutine(res):
-                                asyncio.run(res)
+                                if self._actor_loop is not None:
+                                    fut: concurrent.futures.Future = asyncio.run_coroutine_threadsafe(res, self._actor_loop)
+                                    fut.result(timeout=120)
+                                else:
+                                    raise RuntimeError(
+                                        "ApifyPipeline: APIFY_ACTOR_LOOP not set; cannot safely run Actor.push_data "
+                                        "during shutdown without spawning a separate event loop."
+                                    )
                             Actor.log.info(
                                 "ApifyPipeline: Pushed %d/%d overflow items (Actor.push_data)",
                                 min(i + BATCH_SIZE, total),

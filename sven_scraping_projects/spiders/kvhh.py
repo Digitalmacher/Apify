@@ -20,7 +20,7 @@ TITLES = [
 
 def parse_doctor_name(raw_name):
     if not raw_name:
-        return {"title": None, "first_name": None, "last_name": None}
+        return {"title": "", "first_name": "", "last_name": ""}
     name = raw_name.strip()
     matched_title = None
     for t in TITLES:
@@ -30,13 +30,13 @@ def parse_doctor_name(raw_name):
             break
     parts = name.split()
     if len(parts) <= 1:
-        first_name = parts[0] if parts else None
-        last_name = None
+        first_name = parts[0] if parts else ""
+        last_name = ""
     else:
         first_name = parts[0]
         last_name = " ".join(parts[1:])
     return {
-        "title": matched_title,
+        "title": matched_title or "",
         "first_name": first_name,
         "last_name": last_name,
     }

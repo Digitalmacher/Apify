@@ -12,6 +12,8 @@ from scrapy import Spider
 from scrapy.http import Request
 from parsel import Selector
 
+from sven_scraping_projects.utils.name_parsing import parse_person_name
+
 
 class AsklepiosSpider(Spider):
     name = "asklepios"
@@ -140,11 +142,12 @@ class AsklepiosSpider(Spider):
         )
 
     def parse_profile(self, response):
+        name_raw = self._text(response.xpath("//h1/text()"))
         # Many sitemap URLs are not physician profiles. Only parse pages that look like profiles.
-        h1 = self._text(response.xpath("//h1/text()"))
-        if not h1:
+        if not name_raw:
             self.logger.debug("Skipping non-profile page (no h1): %s", response.url)
             return
+        parsed_name = parse_person_name(name_raw)
 
         clinics = []
         clinic_nodes = response.xpath('//article[@data-test-id="facility-teaser"]')
@@ -176,7 +179,10 @@ class AsklepiosSpider(Spider):
 
         yield {
             "url": response.url,
-            "name": h1,
+            "title": parsed_name["title"],
+            "first_name": parsed_name["first_name"],
+            "last_name": parsed_name["last_name"],
+            "name": parsed_name["name"] or name_raw,
             "position": self._text(
                 response.xpath('//span[text()="Position"]/following-sibling::span/text()')
             ),
