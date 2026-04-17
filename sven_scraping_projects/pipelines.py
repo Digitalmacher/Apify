@@ -1,4 +1,5 @@
 import threading
+import concurrent.futures
 from itemadapter import ItemAdapter
 from twisted.internet import reactor
 
@@ -27,12 +28,18 @@ class ApifyPipeline:
     def __init__(self):
         self.items = []
         self._apify_available = False
+        self._actor_loop = None
     
     def open_spider(self, spider):
         # Check if Apify Actor is available
         try:
             self._apify_available = True
             Actor.log.info(f'ApifyPipeline: Spider {spider.name} opened')
+            try:
+                # Provided by src/main.py to ensure all Apify SDK calls use one shared asyncio loop.
+                self._actor_loop = spider.crawler.settings.get("APIFY_ACTOR_LOOP")
+            except Exception:
+                self._actor_loop = None
         except Exception:
             self._apify_available = False
             import logging
@@ -73,7 +80,6 @@ class ApifyPipeline:
         # the next spider from starting (dormant state).
         from twisted.internet.defer import Deferred
         from twisted.python.failure import Failure
-        import asyncio
 
         d = Deferred()
         items_to_push = list(self.items)
@@ -109,7 +115,14 @@ class ApifyPipeline:
                     for item in items_to_push:
                         await Actor.push_data(item)
 
-                asyncio.run(push_all_items())
+                if self._actor_loop is None:
+                    raise RuntimeError(
+                        "APIFY_ACTOR_LOOP not set. Ensure src/main.py sets Scrapy setting APIFY_ACTOR_LOOP."
+                    )
+
+                fut: concurrent.futures.Future = asyncio.run_coroutine_threadsafe(push_all_items(), self._actor_loop)
+                # Keep behavior equivalent to previous implementation: block this worker thread until push is done.
+                fut.result(timeout=PUSH_TIMEOUT_SEC)
                 if self._apify_available:
                     Actor.log.info(f'ApifyPipeline: Successfully pushed {len(items_to_push)} items to dataset')
             except Exception as e:

@@ -2,6 +2,8 @@ import os
 import asyncio
 import logging
 import sys
+import threading
+import concurrent.futures
 from apify import Actor, Configuration
 from scrapy.crawler import CrawlerRunner
 from scrapy.utils.project import get_project_settings
@@ -36,8 +38,15 @@ def main():
     except Exception as e:
         print(f"BOOT: could not import sven_scraping_projects: {e!r}", flush=True)
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # Run all Apify SDK async calls on a single dedicated asyncio loop.
+    # Scrapy/Twisted reactor runs in the main thread; we keep the asyncio loop alive in a background thread.
+    actor_loop = asyncio.new_event_loop()
+    actor_loop_thread = threading.Thread(target=actor_loop.run_forever, name="apify-actor-loop", daemon=True)
+    actor_loop_thread.start()
+
+    def _run_on_actor_loop(coro, *, timeout: float | None = None):
+        fut: concurrent.futures.Future = asyncio.run_coroutine_threadsafe(coro, actor_loop)
+        return fut.result(timeout=timeout)
 
     # We do not rely on platform events (MIGRATING/PERSIST_STATE listeners).
     # Explicitly disable the events websocket to avoid noisy shutdown errors.
@@ -50,12 +59,26 @@ def main():
     input_data = {}
     actor_initialized = False
     try:
-        input_data = loop.run_until_complete(init_and_get_input())
+        input_data = _run_on_actor_loop(init_and_get_input(), timeout=120)
         actor_initialized = True
     except Exception as e:
         log.exception("Apify Actor.init() / Actor.get_input() failed; falling back to env. Error: %s", e)
 
     if actor_initialized:
+        try:
+            import apify as _apify_pkg
+            actor.log.info("BOOT: apify_version=%s", getattr(_apify_pkg, "__version__", "unknown"))
+        except Exception:
+            actor.log.info("BOOT: apify_version=unknown (import failed)")
+        try:
+            import websockets as _websockets_pkg
+            actor.log.info("BOOT: websockets_version=%s", getattr(_websockets_pkg, "__version__", "unknown"))
+        except Exception:
+            actor.log.info("BOOT: websockets_version=unknown (import failed)")
+        try:
+            actor.log.info("BOOT: actor_events_ws_url=%r", actor.configuration.actor_events_ws_url)
+        except Exception:
+            actor.log.info("BOOT: actor_events_ws_url=<unavailable>")
         actor.log.info('Starting Scrapy spider on Apify...')
     else:
         log.info('Starting Scrapy spider (Apify SDK not initialized; using fallbacks)...')
@@ -87,6 +110,8 @@ def main():
     else:
         log.info('Loading Scrapy project settings...')
     settings = get_project_settings()
+    # Make the Apify loop available to Scrapy components (e.g. pipeline) without creating new event loops.
+    settings.set("APIFY_ACTOR_LOOP", actor_loop, priority="cmdline")
 
     try:
         max_items = input_data.get("max_items")
@@ -165,14 +190,25 @@ def main():
         log.info('Spiders %s completed successfully', spider_names)
     try:
         if actor_initialized:
-            loop.run_until_complete(actor.exit())
+            try:
+                _run_on_actor_loop(actor.exit(), timeout=180)
+            except Exception as e:
+                # Do not fail the run just because internal platform event websocket cleanup failed.
+                log.warning('Could not shut down Apify Actor cleanly (ignored): %s', e, exc_info=True)
     except Exception as e:
         log.warning('Could not shut down Apify Actor cleanly: %s', e)
     finally:
         try:
-            loop.close()
-        except Exception:
-            pass
+            try:
+                actor_loop.call_soon_threadsafe(actor_loop.stop)
+            except Exception:
+                pass
+            actor_loop_thread.join(timeout=10)
+        finally:
+            try:
+                actor_loop.close()
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':
