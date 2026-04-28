@@ -727,7 +727,8 @@ class ApifyPipeline:
             if key in self._seen_keys:
                 self._duplicate_key_count += 1
                 try:
-                    spider.crawler.stats.inc_value("pipeline/duplicate_key_count", spider=spider)
+                    # Scrapy 2.11+ deprecates passing `spider=` to StatsCollector methods.
+                    spider.crawler.stats.inc_value("pipeline/duplicate_key_count")
                 except Exception:
                     pass
             else:

@@ -78,6 +78,7 @@ def main():
 
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     log = logging.getLogger(__name__)
+    received_sigterm = {"value": False}
 
     print(f"BOOT: src.main from={__file__}", flush=True)
     print(f"BOOT: SCRAPY_SETTINGS_MODULE={os.environ.get('SCRAPY_SETTINGS_MODULE')}", flush=True)
@@ -204,6 +205,7 @@ def main():
     # Scrapy + Twisted will still be interrupted, but this increases the chance
     # pipelines flush and stats are emitted before the container is stopped.
     def _handle_sigterm(signum, frame):
+        received_sigterm["value"] = True
         try:
             if actor_initialized:
                 Actor.log.warning("Received SIGTERM (likely migration). Attempting graceful shutdown...")
@@ -262,7 +264,16 @@ def main():
     reactor.run()
     
     exit_code = 0
-    if had_error["value"]:
+    # IMPORTANT: Apify migrations deliver SIGTERM. We persist crawl state via JOBDIR and
+    # SCHEDULER_PERSIST, so the correct behavior is to exit promptly WITHOUT calling
+    # Actor.exit() (which would mark the run as successfully finished and prevent resume).
+    if received_sigterm["value"]:
+        exit_code = 143  # conventional exit code for SIGTERM
+        if actor_initialized:
+            actor.log.warning("Run interrupted by SIGTERM (migration/preemption). Exiting to allow restart/resume.")
+        else:
+            log.warning("Run interrupted by SIGTERM (migration/preemption). Exiting to allow restart/resume.")
+    elif had_error["value"]:
         exit_code = 1
         if actor_initialized:
             actor.log.error("Run failed (one or more spiders crashed).")
@@ -274,7 +285,7 @@ def main():
         else:
             log.info("Spiders %s completed successfully", spider_names)
     try:
-        if actor_initialized:
+        if actor_initialized and not received_sigterm["value"]:
             try:
                 _run_on_actor_loop(actor.exit(), timeout=180)
             except Exception as e:

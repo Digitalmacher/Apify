@@ -126,9 +126,10 @@ class HttpStatusLoggingMiddleware:
 
         # Always track counts, even if we later skip parsing.
         if status:
-            self.stats.inc_value(f"http_status_count/{status}", spider=spider)
+            # Scrapy 2.11+ deprecates passing `spider=` to StatsCollector methods.
+            self.stats.inc_value(f"http_status_count/{status}")
             if status == 404:
-                self.stats.inc_value("http_status_count/404", spider=spider)
+                self.stats.inc_value("http_status_count/404")
 
         if status and status != 200:
             # Prefer warning over error: many sites use 301/302; 4xx/5xx are the real problem.
