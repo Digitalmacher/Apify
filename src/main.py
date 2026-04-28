@@ -263,7 +263,10 @@ def main():
         actor.log.info('Running Twisted reactor...')
     else:
         log.info('Running Twisted reactor...')
-    reactor.run()
+    # Twisted installs its own signal handlers by default, which can override our SIGTERM handler.
+    # On Apify, SIGTERM commonly indicates migration/preemption; we must detect it and exit with
+    # a non-zero code to allow the platform to restart/resume from JOBDIR state.
+    reactor.run(installSignalHandlers=False)
     
     exit_code = 0
     # IMPORTANT: Apify migrations deliver SIGTERM. We persist crawl state via JOBDIR and
