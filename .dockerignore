@@ -1,0 +1,29 @@
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+.eggs/
+build/
+
+# Node
+**/node_modules/
+**/.npm/
+**/.yarn/
+**/.pnpm-store/
+
+# Local actor storage (Apify/Crawlee)
+storage/
+**/storage/
+**/storage/**
+
+# Git + editor
+.git/
+.idea/
+.vscode/
+.cursor/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+

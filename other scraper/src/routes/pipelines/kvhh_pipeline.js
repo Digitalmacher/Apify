@@ -1,10 +1,9 @@
 import { Actor } from 'apify';
+
 import { discoverKvhh } from '../kvhh.js';
 import { profileKvhh } from '../profiles/kvhh.js';
 
 export async function runKvhhPipeline() {
-    const log = Actor.log;
-
     // 1. Run discovery → writes into default dataset for this run
     await discoverKvhh();
 
@@ -32,11 +31,11 @@ export async function runKvhhPipeline() {
     const urls = Array.from(urlSet);
 
     if (urls.length === 0) {
-        return;
+        return false;
     }
 
     // 4. Run profile scraper on ALL URLs (with concurrency inside profileUKE)
-    await profileKvhh({ urls: urls });
+    await profileKvhh({ urls });
 
     return true;
 }

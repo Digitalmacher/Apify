@@ -5,12 +5,14 @@ import sys
 import signal
 import threading
 import concurrent.futures
+import copy
 from apify import Actor, Configuration
 from scrapy.crawler import CrawlerRunner
 from scrapy.utils.project import get_project_settings
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 from twisted.python.failure import Failure
+from sven_scraping_projects.apify_runtime import set_actor_loop
 
 
 @inlineCallbacks
@@ -23,7 +25,44 @@ def run_spiders(spider_names, settings, log_fn=None):
         # NOTE: Each spider gets its own JOBDIR to avoid cross-spider state collisions.
         jobdir_root = os.environ.get("SCRAPY_JOBDIR_ROOT") or os.path.join("storage", "scrapy_jobdir")
         jobdir = os.path.join(jobdir_root, name)
-        spider_settings = settings.copy()
+        # Scrapy's Settings.copy() performs a deepcopy. We intentionally store a live asyncio
+        # event loop in settings (APIFY_ACTOR_LOOP) so pipelines can run Actor SDK coroutines
+        # on a shared background loop. Event loops (and related asyncio internals) are not
+        # deepcopy/pickle-safe, so we must temporarily strip them before copying.
+        actor_loop = None
+        try:
+            actor_loop = settings.get("APIFY_ACTOR_LOOP")
+        except Exception:
+            actor_loop = None
+
+        try:
+            if actor_loop is not None:
+                settings.set("APIFY_ACTOR_LOOP", None, priority="cmdline")
+            spider_settings = settings.copy()
+        except Exception:
+            # Best-effort diagnostics: pinpoint which value breaks deepcopy to avoid future regressions.
+            suspects = []
+            try:
+                for k in list(settings.keys()):
+                    try:
+                        copy.deepcopy(settings.get(k))
+                    except Exception:
+                        suspects.append(k)
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Failed to copy Scrapy settings (deepcopy). "
+                + (f"Non-deepcopyable keys: {suspects!r}" if suspects else "")
+            )
+        finally:
+            if actor_loop is not None:
+                try:
+                    settings.set("APIFY_ACTOR_LOOP", actor_loop, priority="cmdline")
+                except Exception:
+                    pass
+
+        if actor_loop is not None:
+            spider_settings.set("APIFY_ACTOR_LOOP", actor_loop, priority="cmdline")
         spider_settings.set("JOBDIR", jobdir, priority="cmdline")
         spider_settings.set("SCHEDULER_PERSIST", True, priority="cmdline")
 
@@ -54,6 +93,7 @@ def main():
     actor_loop = asyncio.new_event_loop()
     actor_loop_thread = threading.Thread(target=actor_loop.run_forever, name="apify-actor-loop", daemon=True)
     actor_loop_thread.start()
+    set_actor_loop(actor_loop)
 
     def _run_on_actor_loop(coro, *, timeout: float | None = None):
         fut: concurrent.futures.Future = asyncio.run_coroutine_threadsafe(coro, actor_loop)
@@ -121,8 +161,8 @@ def main():
     else:
         log.info('Loading Scrapy project settings...')
     settings = get_project_settings()
-    # Make the Apify loop available to Scrapy components (e.g. pipeline) without creating new event loops.
-    settings.set("APIFY_ACTOR_LOOP", actor_loop, priority="cmdline")
+    # Make the Apify loop available to Scrapy components (e.g. pipeline) without putting it into
+    # Scrapy settings (Scrapy deep-copies settings in multiple places and asyncio loops are not deepcopy-safe).
 
     try:
         max_items = input_data.get("max_items")
@@ -197,7 +237,10 @@ def main():
 
     d = run_spiders(spider_names, settings, log_fn=_log)
 
+    had_error = {"value": False}
+
     def _on_error(f: Failure):
+        had_error["value"] = True
         tb = f.getTraceback()
         if actor_initialized:
             actor.log.error(f"Spider crashed:\n{tb}")
@@ -218,10 +261,18 @@ def main():
         log.info('Running Twisted reactor...')
     reactor.run()
     
-    if actor_initialized:
-        actor.log.info(f'Spiders {spider_names} completed successfully')
+    exit_code = 0
+    if had_error["value"]:
+        exit_code = 1
+        if actor_initialized:
+            actor.log.error("Run failed (one or more spiders crashed).")
+        else:
+            log.error("Run failed (one or more spiders crashed).")
     else:
-        log.info('Spiders %s completed successfully', spider_names)
+        if actor_initialized:
+            actor.log.info(f"Spiders {spider_names} completed successfully")
+        else:
+            log.info("Spiders %s completed successfully", spider_names)
     try:
         if actor_initialized:
             try:
@@ -234,15 +285,30 @@ def main():
     finally:
         try:
             try:
-                actor_loop.call_soon_threadsafe(actor_loop.stop)
+                set_actor_loop(None)
             except Exception:
                 pass
-            actor_loop_thread.join(timeout=10)
+            try:
+                if actor_loop.is_running():
+                    actor_loop.call_soon_threadsafe(actor_loop.stop)
+            except Exception:
+                try:
+                    actor_loop.call_soon_threadsafe(actor_loop.stop)
+                except Exception:
+                    pass
+
+            try:
+                actor_loop_thread.join(timeout=15)
+            except Exception:
+                pass
         finally:
             try:
-                actor_loop.close()
+                if not actor_loop.is_closed():
+                    actor_loop.close()
             except Exception:
                 pass
+
+    raise SystemExit(exit_code)
 
 
 if __name__ == '__main__':

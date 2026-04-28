@@ -9,6 +9,7 @@ from twisted.internet import reactor
 
 from apify import Actor
 from apify_client import ApifyClient
+from sven_scraping_projects.apify_runtime import get_actor_loop
 
 
 def _normalize_for_dataset(obj):
@@ -522,6 +523,14 @@ def _stringify_apify_dataset_record(rec):
     return out
 
 
+def _to_apify_dataset_record(item_dict: dict) -> dict:
+    canonical = _canonicalize_item(item_dict)
+    flattened = _flatten_for_apify_dataset_schema(canonical)
+    normalized = _normalize_for_dataset(flattened)
+    with_aliases = _add_legacy_dataset_aliases(normalized)
+    return _stringify_apify_dataset_record(with_aliases)
+
+
 class ApifyPipeline:
 
     def __init__(self):
@@ -538,6 +547,75 @@ class ApifyPipeline:
         self._seen_keys = set()
         self._duplicate_key_count = 0
         self._actor_loop = None
+
+    def _push_chunk(self, chunk, *, mode: str, progress: tuple[int, int] | None = None) -> None:
+        if not chunk:
+            return
+        if self._apify_dataset is not None:
+            self._apify_dataset.push_items(chunk)
+            if progress is not None:
+                done, total = progress
+                Actor.log.info(
+                    "ApifyPipeline: Pushed %d/%d items (%s, HTTP)",
+                    done,
+                    total,
+                    mode,
+                )
+            else:
+                Actor.log.info(
+                    "ApifyPipeline: Pushed %d items (%s, HTTP)",
+                    len(chunk),
+                    mode,
+                )
+            return
+
+        push_data = getattr(Actor, "push_data", None)
+        if not callable(push_data):
+            self.items.extend(chunk)
+            return
+        try:
+            res = push_data(chunk)
+            if asyncio.iscoroutine(res):
+                if self._actor_loop is not None:
+                    fut: concurrent.futures.Future = asyncio.run_coroutine_threadsafe(res, self._actor_loop)
+                    fut.result(timeout=120)
+                else:
+                    if mode == "overflow":
+                        raise RuntimeError(
+                            "ApifyPipeline: APIFY_ACTOR_LOOP not set; cannot safely run Actor.push_data "
+                            "during shutdown without spawning a separate event loop."
+                        )
+                    try:
+                        asyncio.run(res)
+                    except RuntimeError:
+                        self.items.extend(chunk)
+                        return
+            if progress is not None:
+                done, total = progress
+                Actor.log.info(
+                    "ApifyPipeline: Pushed %d/%d items (%s, Actor.push_data)",
+                    done,
+                    total,
+                    mode,
+                )
+            else:
+                Actor.log.info(
+                    "ApifyPipeline: Pushed %d items (%s, Actor.push_data)",
+                    len(chunk),
+                    mode,
+                )
+        except Exception as e:
+            if mode == "overflow":
+                raise
+            try:
+                Actor.log.warning(
+                    "ApifyPipeline: Actor.push_data failed, buffering %d items: %r",
+                    len(chunk),
+                    e,
+                )
+            except Exception:
+                pass
+            self.items.extend(chunk)
     
     def open_spider(self, spider):
         # Check if Apify Actor is available
@@ -546,7 +624,9 @@ class ApifyPipeline:
             Actor.log.info(f'ApifyPipeline: Spider {spider.name} opened')
             try:
                 # Provided by src/main.py to ensure all Apify SDK calls use one shared asyncio loop.
-                self._actor_loop = spider.crawler.settings.get("APIFY_ACTOR_LOOP")
+                # IMPORTANT: do not store live event loops in Scrapy settings, because Scrapy deep-copies
+                # settings in multiple places (e.g. frozencopy()) and asyncio objects are not deepcopy-safe.
+                self._actor_loop = get_actor_loop()
             except Exception:
                 self._actor_loop = None
         except Exception:
@@ -587,49 +667,6 @@ class ApifyPipeline:
                     batch = []
                     last_flush = time.monotonic()
 
-                    def _push_chunk(chunk):
-                        if not chunk:
-                            return
-                        if self._apify_dataset is not None:
-                            self._apify_dataset.push_items(chunk)
-                            Actor.log.info(
-                                "ApifyPipeline: Pushed %d items (streaming, HTTP)",
-                                len(chunk),
-                            )
-                            return
-                        # Fallback: no token/dataset env — still stream via Actor SDK (async).
-                        push_data = getattr(Actor, "push_data", None)
-                        if not callable(push_data):
-                            self.items.extend(chunk)
-                            return
-                        try:
-                            res = push_data(chunk)
-                            if asyncio.iscoroutine(res):
-                                # Run Actor SDK async call on the shared actor loop to avoid
-                                # spawning a separate event loop during shutdown.
-                                if self._actor_loop is not None:
-                                    fut: concurrent.futures.Future = asyncio.run_coroutine_threadsafe(res, self._actor_loop)
-                                    fut.result(timeout=120)
-                                else:
-                                    # If we don't have the loop (local run / unusual init), buffer instead of risking
-                                    # new event loop creation that could interfere with Actor.exit().
-                                    self.items.extend(chunk)
-                                    return
-                            Actor.log.info(
-                                "ApifyPipeline: Pushed %d items (streaming, Actor.push_data)",
-                                len(chunk),
-                            )
-                        except Exception as e:
-                            try:
-                                Actor.log.warning(
-                                    "ApifyPipeline: Actor.push_data failed, buffering %d items: %r",
-                                    len(chunk),
-                                    e,
-                                )
-                            except Exception:
-                                pass
-                            self.items.extend(chunk)
-
                     while True:
                         if self._push_worker_stop.is_set() and self._push_queue.empty():
                             break
@@ -646,17 +683,17 @@ class ApifyPipeline:
                         if len(batch) >= self._push_batch_size:
                             chunk = batch
                             batch = []
-                            _push_chunk(chunk)
+                            self._push_chunk(chunk, mode="streaming")
                             last_flush = now
                         elif batch and (now - last_flush) >= self._push_flush_interval_s:
                             chunk = batch
                             batch = []
-                            _push_chunk(chunk)
+                            self._push_chunk(chunk, mode="streaming")
                             last_flush = now
 
                     # Final flush on shutdown
                     if batch:
-                        _push_chunk(batch)
+                        self._push_chunk(batch, mode="streaming")
                 except Exception as e:
                     err = e
                     try:
@@ -681,12 +718,7 @@ class ApifyPipeline:
 
         # Add source so we can identify which spider produced each record
         item_dict['source'] = spider.name
-        # Canonicalize + normalize so all spiders share one schema
-        canonical = _canonicalize_item(item_dict)
-        flattened = _flatten_for_apify_dataset_schema(canonical)
-        normalized = _normalize_for_dataset(flattened)
-        with_aliases = _add_legacy_dataset_aliases(normalized)
-        rec = _stringify_apify_dataset_record(with_aliases)
+        rec = _to_apify_dataset_record(item_dict)
 
         # Best-effort duplicate detection (do not drop records; only track + log).
         # Key selection: prefer canonical source_url (also duplicated into legacy url).
@@ -769,39 +801,13 @@ class ApifyPipeline:
                 if items_to_push:
                     BATCH_SIZE = self._push_batch_size
                     total = len(items_to_push)
-                    if self._apify_dataset is not None:
-                        for i in range(0, total, BATCH_SIZE):
-                            chunk = items_to_push[i : i + BATCH_SIZE]
-                            self._apify_dataset.push_items(chunk)
-                            Actor.log.info(
-                                "ApifyPipeline: Pushed %d/%d overflow items (HTTP)",
-                                min(i + BATCH_SIZE, total),
-                                total,
-                            )
-                    else:
-                        push_data = getattr(Actor, "push_data", None)
-                        if not callable(push_data):
-                            raise RuntimeError(
-                                "ApifyPipeline: Cannot push overflow items "
-                                "(no HTTP dataset client and Actor.push_data unavailable)"
-                            )
-                        for i in range(0, total, BATCH_SIZE):
-                            chunk = items_to_push[i : i + BATCH_SIZE]
-                            res = push_data(chunk)
-                            if asyncio.iscoroutine(res):
-                                if self._actor_loop is not None:
-                                    fut: concurrent.futures.Future = asyncio.run_coroutine_threadsafe(res, self._actor_loop)
-                                    fut.result(timeout=120)
-                                else:
-                                    raise RuntimeError(
-                                        "ApifyPipeline: APIFY_ACTOR_LOOP not set; cannot safely run Actor.push_data "
-                                        "during shutdown without spawning a separate event loop."
-                                    )
-                            Actor.log.info(
-                                "ApifyPipeline: Pushed %d/%d overflow items (Actor.push_data)",
-                                min(i + BATCH_SIZE, total),
-                                total,
-                            )
+                    for i in range(0, total, BATCH_SIZE):
+                        chunk = items_to_push[i : i + BATCH_SIZE]
+                        self._push_chunk(
+                            chunk,
+                            mode="overflow",
+                            progress=(min(i + BATCH_SIZE, total), total),
+                        )
 
                 # Wait for streaming worker to finish flushing.
                 if self._push_worker is not None:

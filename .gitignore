@@ -13,3 +13,9 @@ build/
 *.log
 .venv/
 .idea/
+
+# Local actor storage (Apify)
+storage/
+
+# Node
+**/node_modules/

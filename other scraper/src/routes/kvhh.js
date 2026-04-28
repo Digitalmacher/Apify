@@ -1,6 +1,6 @@
 import { Actor } from 'apify';
-import cheerio from 'cheerio';
 import axios from 'axios';
+import cheerio from 'cheerio';
 
 export async function discoverKvhh() {
     const dataset = await Actor.openDataset('discover-kvhh');
@@ -12,25 +12,25 @@ export async function discoverKvhh() {
     const $ = cheerio.load(res.data, { xmlMode: true });
 
     // 2. Extract all <loc> URLs
-    let allUrls = [];
+    const allUrls = [];
     $('loc').each((i, el) => {
         allUrls.push($(el).text().trim());
     });
 
     // 3. Filter only doctor profile URLs
-    const doctorUrls = allUrls.filter(url =>
-        url.startsWith('https://www.kvhh.net/de/medicalregister/net-kvhh-physician-')
+    const doctorUrls = allUrls.filter((url) =>
+        url.startsWith('https://www.kvhh.net/de/medicalregister/net-kvhh-physician-'),
     );
 
-    console.log(`Found ${doctorUrls.length} doctor profile URLs`);
+    Actor.log.info(`Found ${doctorUrls.length} doctor profile URLs`);
 
     // 4. Store each one in dataset
     for (const url of doctorUrls) {
         await dataset.pushData({
             source: 'kvhh',
-            scraping_profile_url: url
+            scraping_profile_url: url,
         });
     }
 
-    console.log('Done saving KVHH doctor URLs.');
+    Actor.log.info('Done saving KVHH doctor URLs.');
 }
