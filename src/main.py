@@ -81,6 +81,8 @@ def main():
     received_sigterm = {"value": False}
 
     print(f"BOOT: src.main from={__file__}", flush=True)
+    # Deploy marker: if you don't see this line in Apify logs, you're not running the latest build.
+    print("BOOT: build_marker=sigterm_migration_fix_v2", flush=True)
     print(f"BOOT: SCRAPY_SETTINGS_MODULE={os.environ.get('SCRAPY_SETTINGS_MODULE')}", flush=True)
     print("BOOT: sys.path[0:5]=" + repr(sys.path[0:5]), flush=True)
     try:
